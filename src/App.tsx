@@ -8,7 +8,7 @@ import {
 import './App.css'
 import {
   buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
-  DEFAULT_OCCUPIED_FEE, monthLabel, statementForAccount, tariffForMonth,
+  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, statementForAccount, tariffForMonth,
 } from './domain'
 import {
   createRemoteExpense, createRemotePayment, createRemoteTariff, currentUserIsAdmin,
@@ -94,6 +94,7 @@ function App() {
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [showLogin, setShowLogin] = useState(false)
+  const [showRecap, setShowRecap] = useState(false)
   const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [paymentForm, setPaymentForm] = useState({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
@@ -140,11 +141,25 @@ function App() {
   const totalArrears = statements.reduce((sum, account) => sum + account.arrearsBalance, 0)
   const unpaid = statements.filter((account) => !account.isPaid).length
   const filteredHouses = data.houses.filter((house) => `${house.number} ${house.owner} ${house.tenant}`.toLowerCase().includes(houseQuery.toLowerCase()))
+  const recapYear = Number(activeMonth.slice(0, 4))
+  const monthlyRecap = useMemo(() => Array.from({ length: 12 }, (_, index) => {
+    const month = `${recapYear}-${String(index + 1).padStart(2, '0')}`
+    const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
+    const paid = data.payments
+      .filter((payment) => selected.houseIds.includes(payment.houseId) && payment.month === month)
+      .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
+    return { month, due, paid, isPaid: paid >= due }
+  }), [data, recapYear, selected])
 
   const selectAccount = (account: BillingAccount) => {
     const statement = statements.find((item) => item.id === account.id) ?? selected
     setSelectedAccountId(account.id)
     setPaymentForm((form) => ({ ...form, mandatory: String(statement.currentBalance), arrears: String(statement.arrearsBalance) }))
+  }
+
+  const openPublicRecap = (account: BillingAccount) => {
+    setSelectedAccountId(account.id)
+    setShowRecap(true)
   }
 
   const flash = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
@@ -221,6 +236,25 @@ function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
   }
 
+  const setOpeningArrears = (account: BillingAccount, value: number) => {
+    setData((current) => ({
+      ...current,
+      houses: current.houses.map((house) => account.houseIds.includes(house.id)
+        ? { ...house, openingArrears: house.id === account.houseIds[0] ? value : 0 }
+        : house),
+    }))
+  }
+
+  const saveOpeningArrears = async (account: BillingAccount) => {
+    try {
+      const affectedHouses = data.houses.filter((house) => account.houseIds.includes(house.id))
+      if (supabaseConfigured) await Promise.all(affectedHouses.map(updateRemoteHouse))
+      flash(`Tagihan lama ${account.code} berhasil disimpan.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Tagihan lama gagal disimpan.')
+    }
+  }
+
   const saveSettings = async (event: FormEvent) => {
     event.preventDefault()
     const next = {
@@ -294,14 +328,14 @@ function App() {
         </section>
         <section className="panel status-preview">
           <div className="panel-title"><div><span>Status pembayaran</span><h3>Pilih akun rumah</h3></div><button className="text-button" onClick={() => setPublicView('dues')}>Lihat lengkap →</button></div>
-          <StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} />
+          <StatusGrid accounts={statements} selectedId={selected.id} onSelect={openPublicRecap} />
           <div className="selected-summary"><div><span>{selected.code}</span><h3>{selected.residentName}</h3><small>{selected.houseIds.length === 2 ? 'Satu akun gabungan untuk dua rumah' : residenceLabel[selected.residenceStatus]}</small></div><dl><div><dt>Tagihan bulan ini</dt><dd>{rupiah.format(selected.monthlyDue)}</dd></div><div><dt>Sudah dibayar</dt><dd>{rupiah.format(selected.paidThisPeriod)}</dd></div><div><dt>Total belum dibayar</dt><dd>{rupiah.format(selected.totalOutstanding)}</dd></div></dl><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
         </section>
       </div>}
 
       {publicView === 'dues' && <section className="panel page-panel">
         <div className="panel-title"><div><span>Status {monthLabel(activeMonth)}</span><h2>Status Iuran Warga</h2><p>CSJ02 dan CSJ03 tercatat sebagai satu akun pembayaran.</p></div><div className="legend"><span><i className="dot paid" />Lunas</span><span><i className="dot due" />Belum lunas</span></div></div>
-        <StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} />
+        <StatusGrid accounts={statements} selectedId={selected.id} onSelect={openPublicRecap} />
         <div className="selected-summary large"><div><span>{selected.code}</span><h3>{selected.residentName}</h3><small>{selected.houseIds.length === 2 ? 'Akun pembayaran gabungan' : residenceLabel[selected.residenceStatus]}</small></div><dl><div><dt>Tagihan periode</dt><dd>{rupiah.format(selected.monthlyDue)}</dd></div><div><dt>Terbayar periode</dt><dd>{rupiah.format(selected.paidThisPeriod)}</dd></div><div><dt>Tunggakan sebelumnya</dt><dd>{rupiah.format(selected.arrearsBalance)}</dd></div><div><dt>Total kewajiban</dt><dd>{rupiah.format(selected.totalOutstanding)}</dd></div></dl><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
         <div className="table-wrap"><table><thead><tr><th>Akun</th><th>Nama</th><th>Tagihan</th><th>Terbayar</th><th>Tunggakan</th><th>Status</th></tr></thead><tbody>{statements.map((item) => <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.residentName}</td><td>{rupiah.format(item.monthlyDue)}</td><td>{rupiah.format(item.paidThisPeriod)}</td><td>{rupiah.format(item.arrearsBalance)}</td><td><span className={`mini-status ${item.isPaid ? 'paid' : 'due'}`}>{item.isPaid ? 'Lunas' : 'Belum'}</span></td></tr>)}</tbody></table></div>
       </section>}
@@ -330,13 +364,28 @@ function App() {
 
         {adminView === 'expenses' && <><div className="admin-heading"><div><span>Kas keluar</span><h2>Catat Pengeluaran</h2><p>Semua pengeluaran akan langsung muncul pada laporan warga.</p></div></div><section className="panel form-card horizontal"><form className="form-grid expense-entry" onSubmit={saveExpense}><label>Tanggal<input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} /></label><label>Kategori<select value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}><option value="Security">Keamanan</option><option value="Cleaning">Kebersihan</option><option value="Maintenance">Perawatan</option><option value="Administration">Administrasi</option><option value="Other">Lainnya</option></select></label><label>Jumlah<input type="number" min="0" step="1000" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} /></label><label>Keterangan<input placeholder="Contoh: perbaikan lampu" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} /></label><button className="primary-action" type="submit"><Plus size={18} />Simpan</button></form></section><section className="panel history-panel"><div className="panel-title"><div><span>Riwayat</span><h3>Semua Pengeluaran</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th><th /></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{expenseLabel[expense.category] ?? expense.category}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td><td><button className="icon-button danger" onClick={() => void removeExpense(expense)} title="Hapus pengeluaran"><Trash2 size={16} /></button></td></tr>)}</tbody></table></div></section></>}
 
-        {adminView === 'houses' && <><div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Perubahan status hunian akan memengaruhi tarif bulan berjalan.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div><section className="panel house-editor"><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Tunggakan awal</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="number" min="0" step="1000" value={house.openingArrears} onChange={(e) => patchHouse(house.id, { openingArrears: Number(e.target.value) })} /></td><td><button className="small-action" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section></>}
+        {adminView === 'houses' && <>
+          <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola penghuni serta tagihan yang masih terutang sampai 31 Desember 2025.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
+          <section className="panel opening-arrears-panel">
+            <div className="panel-title"><div><span>Saldo awal piutang</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Nilai awal seluruh akun adalah Rp0. Masukkan nominal lama secara manual jika ada.</p></div></div>
+            <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" value={account.openingArrears} onChange={(e) => setOpeningArrears(account, Number(e.target.value || 0))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
+          </section>
+          <section className="panel house-editor"><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><button className="small-action" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
+        </>}
 
         {adminView === 'settings' && <><div className="admin-heading"><div><span>Konfigurasi</span><h2>Pengaturan Kas</h2><p>Kelola rekening pembayaran, saldo awal, dan riwayat tarif.</p></div></div><div className="settings-grid"><section className="panel form-card"><div className="panel-title"><div><span>Informasi publik</span><h3>Rekening dan Saldo Awal</h3></div></div><form className="form-grid" onSubmit={saveSettings}><label>Nama bank<input value={settingsForm.bankName} onChange={(e) => setSettingsForm({ ...settingsForm, bankName: e.target.value })} /></label><label>Nomor rekening<input value={settingsForm.bankAccountNumber} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountNumber: e.target.value })} /></label><label>Nama pemilik rekening<input value={settingsForm.bankAccountHolder} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountHolder: e.target.value })} /></label><label>Saldo awal kas<input type="number" step="1000" value={settingsForm.openingCashBalance} onChange={(e) => setSettingsForm({ ...settingsForm, openingCashBalance: e.target.value })} /></label><label className="wide">Tarif gabungan CSJ02 + CSJ03<input type="number" min="0" step="1000" value={settingsForm.jointFee0203} onChange={(e) => setSettingsForm({ ...settingsForm, jointFee0203: e.target.value })} /></label><button className="primary-action wide" type="submit">Simpan pengaturan</button></form></section><section className="panel form-card"><div className="panel-title"><div><span>Tarif efektif</span><h3>Tambah Riwayat Tarif</h3></div></div><div className="current-tariff"><span>Tarif {monthLabel(activeMonth)}</span><strong>Dihuni {rupiah.format(activeTariff.occupiedFee)} · Kosong {rupiah.format(activeTariff.emptyFee)}</strong></div><form className="form-grid" onSubmit={saveTariff}><label>Berlaku mulai<input type="date" value={tariffForm.effectiveDate} onChange={(e) => setTariffForm({ ...tariffForm, effectiveDate: e.target.value })} /></label><label>Tarif dihuni<input type="number" min="0" step="1000" value={tariffForm.occupiedFee} onChange={(e) => setTariffForm({ ...tariffForm, occupiedFee: e.target.value })} /></label><label>Tarif rumah kosong<input type="number" min="0" step="1000" value={tariffForm.emptyFee} onChange={(e) => setTariffForm({ ...tariffForm, emptyFee: e.target.value })} /></label><label>Catatan<input placeholder="Contoh: keputusan rapat warga" value={tariffForm.notes} onChange={(e) => setTariffForm({ ...tariffForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Tambahkan tarif</button></form><div className="tariff-history">{[...data.tariffs].reverse().map((tariff) => <div key={tariff.id}><span>{tariff.effectiveDate}</span><strong>{rupiah.format(tariff.occupiedFee)} / {rupiah.format(tariff.emptyFee)}</strong></div>)}</div></section></div></>}
       </div>
     </section>}
 
     <footer><span>Monitoring Iuran Warga CSJ</span><span>Data diperbarui langsung dari Supabase</span></footer>
+
+    {showRecap && <div className="modal-backdrop" role="presentation"><section className="recap-dialog" role="dialog" aria-modal="true" aria-label={`Rekap pembayaran ${selected.code}`}>
+      <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
+      <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran {recapYear}</span><h2>{selected.code}</h2><p>{selected.residentName}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+      <div className="prior-arrears"><div><span>Tagihan sampai 31 Desember 2025</span><small>Nilai ini diisi manual oleh pengurus.</small></div><strong>{rupiah.format(selected.openingArrears)}</strong></div>
+      <div className="month-recap-grid">{monthlyRecap.map((item) => <article className={item.isPaid ? 'paid' : 'due'} key={item.month}><div className="month-status-icon">{item.isPaid ? <Check size={19} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isPaid ? 'Sudah dibayar' : 'Belum dibayar'}</span></div><dl><div><dt>Tagihan</dt><dd>{rupiah.format(item.due)}</dd></div><div><dt>Dibayar</dt><dd>{rupiah.format(item.paid)}</dd></div></dl></article>)}</div>
+      <div className="recap-legend"><span><i className="dot paid" />Hijau: sudah lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span></div>
+    </section></div>}
 
     {showLogin && <div className="modal-backdrop" role="presentation"><section className="login-dialog" role="dialog" aria-modal="true" aria-label="Login admin"><button className="modal-close" onClick={() => setShowLogin(false)} aria-label="Tutup"><X size={20} /></button><div className="login-icon"><ShieldCheck size={28} /></div><span className="section-kicker">Akses pengurus</span><h2>Login Admin</h2><p>Masuk untuk mencatat pembayaran, pengeluaran, dan memperbarui data warga.</p><form onSubmit={signIn}><label>Email<input type="email" autoComplete="email" required value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} /></label><label>Kata sandi<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} /></label><button className="primary-action" type="submit"><LogIn size={18} />Masuk</button></form></section></div>}
   </main>

@@ -8,7 +8,9 @@ pengurus yang masuk melalui Supabase Auth.
 
 - Saldo kas kumulatif serta pemasukan dan pengeluaran bulanan
 - Tunggakan otomatis sejak Januari 2026 berdasarkan riwayat tarif
+- Tagihan lama sampai 31 Desember 2025 yang dapat diisi manual per akun
 - Status iuran 35 akun pembayaran untuk 36 rumah
+- Rekap pembayaran Januari–Desember dengan status lunas/belum lunas per bulan
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
 - Pencatatan pengeluaran
 - Tampilan publik hanya-baca

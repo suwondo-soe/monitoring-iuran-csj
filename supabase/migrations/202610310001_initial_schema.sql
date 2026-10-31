@@ -89,6 +89,9 @@ create table if not exists public.houses (
   updated_at timestamptz not null default now()
 );
 
+comment on column public.houses.opening_arrears is
+  'Amount still due through 31 December 2025; entered manually per billing account.';
+
 create table if not exists public.tariff_history (
   id uuid primary key default gen_random_uuid(),
   effective_date date unique not null,
