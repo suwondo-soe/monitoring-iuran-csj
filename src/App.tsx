@@ -25,6 +25,7 @@ const rupiah = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'ID
 const now = new Date()
 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 const currentMonth = today.slice(0, 7)
+const pageOpenedLabel = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }).format(now)
 
 const people = [
   'Dwi Nanung/Ayu', 'Anky/Glady', 'Anky/Glady', 'Qomar/Intan Widya', 'Muh. Basyir/Ova',
@@ -95,6 +96,7 @@ function App() {
   const [error, setError] = useState('')
   const [showLogin, setShowLogin] = useState(false)
   const [showRecap, setShowRecap] = useState(false)
+  const [recapYear, setRecapYear] = useState(Math.min(2028, Math.max(2026, now.getFullYear())))
   const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [paymentForm, setPaymentForm] = useState({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
@@ -141,15 +143,20 @@ function App() {
   const totalArrears = statements.reduce((sum, account) => sum + account.arrearsBalance, 0)
   const unpaid = statements.filter((account) => !account.isPaid).length
   const filteredHouses = data.houses.filter((house) => `${house.number} ${house.owner} ${house.tenant}`.toLowerCase().includes(houseQuery.toLowerCase()))
-  const recapYear = Number(activeMonth.slice(0, 4))
   const monthlyRecap = useMemo(() => Array.from({ length: 12 }, (_, index) => {
     const month = `${recapYear}-${String(index + 1).padStart(2, '0')}`
     const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
     const paid = data.payments
       .filter((payment) => selected.houseIds.includes(payment.houseId) && payment.month === month)
       .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
-    return { month, due, paid, isPaid: paid >= due }
+    const outstanding = Math.max(due - paid, 0)
+    const isPaid = outstanding === 0
+    return { month, due, paid, outstanding, isPaid, isFuture: month > currentMonth && !isPaid }
   }), [data, recapYear, selected])
+  const currentRecapStatement = useMemo(
+    () => statementForAccount(selected, data, currentMonth),
+    [data, selected],
+  )
 
   const selectAccount = (account: BillingAccount) => {
     const statement = statements.find((item) => item.id === account.id) ?? selected
@@ -159,6 +166,7 @@ function App() {
 
   const openPublicRecap = (account: BillingAccount) => {
     setSelectedAccountId(account.id)
+    setRecapYear(Math.min(2028, Math.max(2026, now.getFullYear())))
     setShowRecap(true)
   }
 
@@ -381,10 +389,12 @@ function App() {
 
     {showRecap && <div className="modal-backdrop" role="presentation"><section className="recap-dialog" role="dialog" aria-modal="true" aria-label={`Rekap pembayaran ${selected.code}`}>
       <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
-      <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran {recapYear}</span><h2>{selected.code}</h2><p>{selected.residentName}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+      <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>{selected.residentName}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${currentRecapStatement.isPaid ? 'paid' : 'due'}`}>{currentRecapStatement.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+      <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{[2026, 2027, 2028].map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}</div>
+      <div className="cumulative-due"><div><span>Kumulatif belum terbayar</span><small>Sampai halaman dibuka pada {pageOpenedLabel}</small></div><strong>{rupiah.format(currentRecapStatement.totalOutstanding)}</strong></div>
       <div className="prior-arrears"><div><span>Tagihan sampai 31 Desember 2025</span><small>Nilai ini diisi manual oleh pengurus.</small></div><strong>{rupiah.format(selected.openingArrears)}</strong></div>
-      <div className="month-recap-grid">{monthlyRecap.map((item) => <article className={item.isPaid ? 'paid' : 'due'} key={item.month}><div className="month-status-icon">{item.isPaid ? <Check size={19} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isPaid ? 'Sudah dibayar' : 'Belum dibayar'}</span></div><dl><div><dt>Tagihan</dt><dd>{rupiah.format(item.due)}</dd></div><div><dt>Dibayar</dt><dd>{rupiah.format(item.paid)}</dd></div></dl></article>)}</div>
-      <div className="recap-legend"><span><i className="dot paid" />Hijau: sudah lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span></div>
+      <div className="month-recap-grid">{monthlyRecap.map((item) => <article className={item.isFuture ? 'future' : item.isPaid ? 'paid' : 'due'} key={item.month}><div className="month-status-icon">{item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isFuture ? 'Belum jatuh tempo' : item.isPaid ? 'Lunas' : 'Belum dibayar'}</span></div>{!item.isPaid && !item.isFuture && <div className="month-outstanding"><span>Terutang</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>)}</div>
+      <div className="recap-legend"><span><i className="dot paid" />Hijau: lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span><span><i className="dot future" />Abu-abu: belum jatuh tempo</span></div>
     </section></div>}
 
     {showLogin && <div className="modal-backdrop" role="presentation"><section className="login-dialog" role="dialog" aria-modal="true" aria-label="Login admin"><button className="modal-close" onClick={() => setShowLogin(false)} aria-label="Tutup"><X size={20} /></button><div className="login-icon"><ShieldCheck size={28} /></div><span className="section-kicker">Akses pengurus</span><h2>Login Admin</h2><p>Masuk untuk mencatat pembayaran, pengeluaran, dan memperbarui data warga.</p><form onSubmit={signIn}><label>Email<input type="email" autoComplete="email" required value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} /></label><label>Kata sandi<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} /></label><button className="primary-action" type="submit"><LogIn size={18} />Masuk</button></form></section></div>}
