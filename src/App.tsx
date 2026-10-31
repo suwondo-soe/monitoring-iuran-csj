@@ -2,7 +2,8 @@ import {
   Banknote,
   CalendarDays,
   Check,
-  Cloud,
+  Copy,
+  CreditCard,
   Download,
   Home,
   Landmark,
@@ -39,6 +40,9 @@ import type {
 const OCCUPIED_FEE = 185000
 const EMPTY_FEE = 145000
 const STORAGE_KEY = 'keuangan-csj-ledger-v1'
+const BANK_NAME = 'Bank Neo Commerce'
+const BANK_ACCOUNT = '5859457243882555'
+const BANK_ACCOUNT_HOLDER = 'Suwondo'
 
 const defaultHouses: House[] = [
   {
@@ -470,6 +474,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(supabaseConfigured)
   const [showLogin, setShowLogin] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [bankCopied, setBankCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [activeMonth, setActiveMonth] = useState(monthNow())
   const [activeTab, setActiveTab] = useState<Tab>('summary')
@@ -778,6 +783,16 @@ function App() {
     setStatusMessage('Signed out.')
   }
 
+  const copyBankAccount = async () => {
+    try {
+      await navigator.clipboard.writeText(BANK_ACCOUNT)
+      setBankCopied(true)
+      window.setTimeout(() => setBankCopied(false), 1800)
+    } catch {
+      setStatusMessage(`Nomor rekening: ${BANK_ACCOUNT}`)
+    }
+  }
+
   const exportPayments = () => {
     downloadCsv(
       `csj-payments-${activeMonth}.csv`,
@@ -841,7 +856,7 @@ function App() {
     return (
       <main className="app-shell loading-shell">
         <LoaderCircle className="spin" size={28} />
-        <p>Loading neighbourhood ledger...</p>
+        <p>Memuat data iuran warga...</p>
       </main>
     )
   }
@@ -849,14 +864,16 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Neighbourhood treasury</p>
-          <h1>Keuangan CSJ</h1>
+        <div className="brand-block">
+          <p className="eyebrow">Transparansi Kas Warga</p>
+          <h1>Monitoring Iuran Warga CSJ</h1>
+          <p className="brand-copy">Catatan iuran, tunggakan, dan penggunaan kas lingkungan.</p>
         </div>
         <div className="topbar-actions">
+          {canEdit && (
           <label className="opening-cash">
             <Landmark size={18} />
-            <span>Opening cash</span>
+            <span>Saldo awal</span>
             <input
               aria-label="Opening cash balance"
               min="0"
@@ -873,6 +890,7 @@ function App() {
               onBlur={() => void saveOpeningBalance()}
             />
           </label>
+          )}
           <label className="month-picker">
             <CalendarDays size={18} />
             <input
@@ -882,15 +900,11 @@ function App() {
               onChange={(event) => changeMonth(event.target.value)}
             />
           </label>
-          <span className="data-source">
-            <Cloud size={17} />
-            {supabaseConfigured ? 'Supabase' : 'Local mode'}
-          </span>
           {supabaseConfigured &&
             (isAdmin ? (
               <button className="secondary-action" onClick={() => void signOut()} type="button">
                 <LogOut size={17} />
-                Sign out
+                Keluar
               </button>
             ) : (
               <button
@@ -899,7 +913,7 @@ function App() {
                 type="button"
               >
                 <LogIn size={17} />
-                Admin login
+                Login Admin
               </button>
             ))}
         </div>
@@ -918,7 +932,7 @@ function App() {
           type="button"
         >
           <Banknote size={18} />
-          Summary
+          Ringkasan
         </button>
         <button
           className={activeTab === 'collection' ? 'active' : ''}
@@ -926,7 +940,7 @@ function App() {
           type="button"
         >
           <ReceiptText size={18} />
-          Collection
+          Iuran Warga
         </button>
         <button
           className={activeTab === 'expenses' ? 'active' : ''}
@@ -934,53 +948,106 @@ function App() {
           type="button"
         >
           <WalletCards size={18} />
-          Expenses
+          Pengeluaran
         </button>
       </nav>
 
       {activeTab === 'summary' && (
         <section className="page-layer">
-          <section className="balance-hero" aria-label="Cash balance">
-            <div>
-              <p className="eyebrow">Current cash balance</p>
-              <strong>{rupiah.format(summary.balance)}</strong>
+          <section className="public-overview">
+            <div className="payment-band">
+              <div className="payment-icon"><CreditCard size={26} /></div>
+              <div className="payment-copy">
+                <p className="eyebrow">Informasi Pembayaran</p>
+                <h2>{BANK_NAME}</h2>
+                <strong>{BANK_ACCOUNT}</strong>
+                <span>a.n. {BANK_ACCOUNT_HOLDER}</span>
+              </div>
+              <button className="copy-account" onClick={() => void copyBankAccount()} type="button">
+                {bankCopied ? <Check size={18} /> : <Copy size={18} />}
+                {bankCopied ? 'Tersalin' : 'Salin Nomor Rekening'}
+              </button>
             </div>
-            <div className="balance-breakdown">
-              <span>Opening {rupiah.format(data.openingCashBalance)}</span>
-              <span>Revenue {rupiah.format(summary.received)}</span>
-              <span>Expenses {rupiah.format(summary.expenses)}</span>
+
+            <div className="balance-hero" aria-label="Ringkasan kas">
+              <div>
+                <p className="eyebrow">Saldo Kas</p>
+                <strong>{rupiah.format(summary.balance)}</strong>
+              </div>
+              <div className="balance-breakdown">
+                <span>Pemasukan {rupiah.format(summary.received)}</span>
+                <span>Pengeluaran {rupiah.format(summary.expenses)}</span>
+                <span>Saldo awal {rupiah.format(data.openingCashBalance)}</span>
+              </div>
             </div>
           </section>
 
           <section className="summary-grid" aria-label="Monthly summary">
             <article className="metric">
-              <span>Expected</span>
+              <span>Target iuran</span>
               <strong>{rupiah.format(summary.expected)}</strong>
             </article>
             <article className="metric good">
-              <span>Received</span>
+              <span>Pemasukan</span>
               <strong>{rupiah.format(summary.received)}</strong>
             </article>
             <article className="metric">
-              <span>Expenses</span>
+              <span>Pengeluaran</span>
               <strong>{rupiah.format(summary.expenses)}</strong>
             </article>
             <article className="metric alert">
-              <span>Total tunggakan</span>
+              <span>Total tunggakan lama</span>
               <strong>{rupiah.format(summary.arrearsRemaining)}</strong>
             </article>
             <article className="metric alert">
-              <span>Unpaid houses</span>
-              <strong>{summary.unpaid}</strong>
+              <span>Belum lunas bulan ini</span>
+              <strong>{summary.unpaid} rumah</strong>
             </article>
+          </section>
+
+          <section className="panel public-house-selector">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Status Iuran {activeMonth}</p>
+                <h2>Pilih Rumah</h2>
+              </div>
+              <span className={`status-pill ${selectedStats.paid ? 'paid' : 'due'}`}>
+                {selectedStats.paid ? 'Lunas' : 'Belum lunas'}
+              </span>
+            </div>
+            <div className="house-number-grid" aria-label="Pilih nomor rumah">
+              {houseStats.map((house) => (
+                <button
+                  className={`${selectedHouseId === house.id ? 'selected' : ''} ${house.paid ? 'paid' : 'due'}`}
+                  key={house.id}
+                  onClick={() => selectHouse(house.id)}
+                  type="button"
+                  aria-label={`Rumah ${String(house.id).padStart(2, '0')}`}
+                >
+                  {String(house.id).padStart(2, '0')}
+                </button>
+              ))}
+            </div>
+            <div className="public-house-detail">
+              <div>
+                <p className="eyebrow">CSJ {String(selectedHouse.id).padStart(2, '0')}</p>
+                <h3>{selectedHouse.residenceStatus === 'rented' && selectedHouse.tenant ? selectedHouse.tenant : selectedHouse.owner}</h3>
+                <span>{residenceLabel[selectedHouse.residenceStatus]}</span>
+              </div>
+              <dl>
+                <div><dt>Tagihan bulan ini</dt><dd>{rupiah.format(selectedStats.expected)}</dd></div>
+                <div><dt>Sudah dibayar</dt><dd>{rupiah.format(selectedStats.mandatoryPaid)}</dd></div>
+                <div><dt>Sisa + tunggakan</dt><dd>{rupiah.format(selectedStats.totalOutstanding)}</dd></div>
+              </dl>
+            </div>
           </section>
 
           <section className="summary-details">
             <div className="panel">
               <div className="panel-heading">
                 <div>
-                  <p className="eyebrow">In arrear balance</p>
-                  <h2>Outstanding Houses</h2>
+                  <p className="eyebrow">Daftar belum lunas</p>
+                  <h2>Tunggakan Warga</h2>
                 </div>
                 <button
                   className="secondary-action"
@@ -988,17 +1055,17 @@ function App() {
                   type="button"
                 >
                   <Download size={18} />
-                  Monthly report
+                  Unduh laporan
                 </button>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>House</th>
-                      <th>Payer</th>
-                      <th>Monthly Due</th>
-                      <th>Arrears</th>
+                      <th>Rumah</th>
+                      <th>Nama</th>
+                      <th>Iuran bulan ini</th>
+                      <th>Tunggakan lama</th>
                       <th>Total</th>
                     </tr>
                   </thead>
