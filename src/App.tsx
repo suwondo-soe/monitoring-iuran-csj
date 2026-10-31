@@ -1,1516 +1,345 @@
-import {
-  Banknote,
-  CalendarDays,
-  Check,
-  Copy,
-  CreditCard,
-  Download,
-  Home,
-  Landmark,
-  LoaderCircle,
-  LogIn,
-  LogOut,
-  Plus,
-  ReceiptText,
-  Search,
-  Settings,
-  WalletCards,
-} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import {
+  ArrowLeft, Banknote, Building2, CalendarDays, Check, CheckCircle2, CircleAlert,
+  Copy, CreditCard, Home, LogIn, LogOut, Plus, ReceiptText, Settings2, ShieldCheck,
+  Trash2, Users, WalletCards, X,
+} from 'lucide-react'
 import './App.css'
 import {
-  createRemoteExpense,
-  createRemotePayment,
-  currentUserIsAdmin,
-  loadRemoteLedger,
-  updateRemoteHouse,
-  updateRemoteOpeningBalance,
+  buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
+  DEFAULT_OCCUPIED_FEE, monthLabel, statementForAccount, tariffForMonth,
+} from './domain'
+import {
+  createRemoteExpense, createRemotePayment, createRemoteTariff, currentUserIsAdmin,
+  deleteRemoteExpense, deleteRemotePayment, loadRemoteLedger, updateRemoteHouse,
+  updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
-  Expense,
-  House,
-  LedgerData,
-  Payment,
-  ResidenceStatus,
-  Tab,
+  AdminView, BillingAccount, Expense, House, LedgerData, Payment, PublicView,
+  ResidenceStatus, Tariff,
 } from './types'
 
-const OCCUPIED_FEE = 185000
-const EMPTY_FEE = 145000
-const STORAGE_KEY = 'keuangan-csj-ledger-v1'
-const BANK_NAME = 'Bank Neo Commerce'
-const BANK_ACCOUNT = '5859457243882555'
-const BANK_ACCOUNT_HOLDER = 'Suwondo'
+const rupiah = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 })
+const now = new Date()
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+const currentMonth = today.slice(0, 7)
 
-const defaultHouses: House[] = [
-  {
-    id: 1,
-    number: 'CSJ 1',
-    owner: 'Dwi Nanung/Ayu',
-    residenceStatus: 'rented',
-    tenant: 'Ardani/Amelia',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 2,
-    number: 'CSJ 2',
-    owner: 'Anky/Glady',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-    monthlyFeeOverride: 157500,
-  },
-  {
-    id: 3,
-    number: 'CSJ 3',
-    owner: 'Anky/Glady',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-    monthlyFeeOverride: 157500,
-  },
-  {
-    id: 4,
-    number: 'CSJ 4',
-    owner: 'Qomar/Intan Widya',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 5,
-    number: 'CSJ 5',
-    owner: 'Muh. Basyir / Ova',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 6,
-    number: 'CSJ 6',
-    owner: 'Irfan/Windi',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 7,
-    number: 'CSJ 7',
-    owner: 'Desis/Koko',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 8,
-    number: 'CSJ 8',
-    owner: 'Melda NyataJaya',
-    residenceStatus: 'rented',
-    tenant: 'Farid/Yanne',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 9,
-    number: 'CSJ 9',
-    owner: 'Sigit',
-    residenceStatus: 'rented',
-    tenant: 'M. Andi/Nisa',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 10,
-    number: 'CSJ 10',
-    owner: 'Hakim/Indah',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 11,
-    number: 'CSJ 11',
-    owner: 'Yuli Adi/Lisa',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 12,
-    number: 'CSJ 12',
-    owner: 'Fadel',
-    residenceStatus: 'rented',
-    tenant: 'Jihad/Risa',
-    rentalStartDate: '2026-08-01',
-    openingArrears: 0,
-  },
-  {
-    id: 13,
-    number: 'CSJ 13',
-    owner: 'Nasrul',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 14,
-    number: 'CSJ 14',
-    owner: 'Rahmad/Wety',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 15,
-    number: 'CSJ 15',
-    owner: 'Ferdian/Yayah',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 16,
-    number: 'CSJ 16',
-    owner: 'Sepino/Prima',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 17,
-    number: 'CSJ 17',
-    owner: 'Dede/Mega',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 18,
-    number: 'CSJ 18',
-    owner: 'Adib A. Rahman',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 19,
-    number: 'CSJ 19',
-    owner: 'Deny Haryanto',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 20,
-    number: 'CSJ 20',
-    owner: 'Dwi Pratiknyo',
-    residenceStatus: 'empty',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 21,
-    number: 'CSJ 21',
-    owner: 'Robien',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 22,
-    number: 'CSJ 22',
-    owner: 'Suwondo',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 23,
-    number: 'CSJ 23',
-    owner: 'Oma',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 24,
-    number: 'CSJ 24',
-    owner: 'Tika',
-    residenceStatus: 'empty',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 25,
-    number: 'CSJ 25',
-    owner: 'Aldhi Givvari',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 26,
-    number: 'CSJ 26',
-    owner: 'Ahmad Budiarjo 1',
-    residenceStatus: 'rented',
-    tenant: 'Babay/Lina',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 27,
-    number: 'CSJ 27',
-    owner: 'Ahmad Budiarjo 2',
-    residenceStatus: 'rented',
-    tenant: 'Ismail',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 28,
-    number: 'CSJ 28',
-    owner: 'Rolandi Situmorang',
-    residenceStatus: 'empty',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 29,
-    number: 'CSJ 29',
-    owner: 'Arif Rifana/Gina',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 30,
-    number: 'CSJ 30',
-    owner: 'Frans',
-    residenceStatus: 'rented',
-    tenant: 'Aria Marta',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
-  {
-    id: 31,
-    number: 'CSJ 31',
-    owner: 'Fiqih/Asih',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 32,
-    number: 'CSJ 32',
-    owner: 'Yusron',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 33,
-    number: 'CSJ 33',
-    owner: 'Rama',
-    residenceStatus: 'empty',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 34,
-    number: 'CSJ 34',
-    owner: 'Nunik',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 35,
-    number: 'CSJ 35',
-    owner: 'Rosyidi/Anizar 1',
-    residenceStatus: 'owner_occupied',
-    tenant: '',
-    rentalStartDate: '',
-    openingArrears: 0,
-  },
-  {
-    id: 36,
-    number: 'CSJ 36',
-    owner: 'Rosyidi/Anizar 1',
-    residenceStatus: 'rented',
-    tenant: 'Angga/Intan Andriani',
-    rentalStartDate: '2026-01-01',
-    openingArrears: 0,
-  },
+const people = [
+  'Dwi Nanung/Ayu', 'Anky/Glady', 'Anky/Glady', 'Qomar/Intan Widya', 'Muh. Basyir/Ova',
+  'Irfan/Windi', 'Desis/Koko', 'Melda NyataJaya', 'Sigit', 'Hakim/Indah', 'Yuli Adi/Lisa',
+  'Fadel', 'Nasrul', 'Rahmad/Wety', 'Ferdian/Yayah', 'Sepino/Prima', 'Dede/Mega',
+  'Adib A. Rahman', 'Deny Haryanto', 'Dwi Pratiknyo', 'Robien', 'Suwondo', 'Oma', 'Tika',
+  'Aldhi Givvari', 'Ahmad Budiarjo 1', 'Ahmad Budiarjo 2', 'Rolandi Situmorang',
+  'Arif Rifana/Gina', 'Frans', 'Fiqih/Asih', 'Yusron', 'Rama', 'Nunik',
+  'Rosyidi/Anizar 1', 'Rosyidi/Anizar 1',
 ]
-
-const monthNow = () => new Date().toISOString().slice(0, 7)
-const dateNow = () => new Date().toISOString().slice(0, 10)
-const feeFor = (house: House) =>
-  house.monthlyFeeOverride ??
-  (house.residenceStatus === 'empty' ? EMPTY_FEE : OCCUPIED_FEE)
-const dueForHouse = (house: House, payments: Payment[], month: string) => {
-  const paid = payments
-    .filter((payment) => payment.houseId === house.id && payment.month === month)
-    .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
-
-  return Math.max(feeFor(house) - paid, 0)
+const emptyIds = new Set([20, 24, 28, 33])
+const rented: Record<number, string> = {
+  1: 'Ardani/Amelia', 8: 'Farid/Yanne', 9: 'M. Andi/Nisa', 12: 'Jihad/Risa',
+  26: 'Babay/Lina', 27: 'Ismail', 30: 'Aria Marta', 36: 'Angga/Intan Andriani',
 }
-const arrearsForHouse = (house: House, payments: Payment[]) => {
-  const paid = payments
-    .filter((payment) => payment.houseId === house.id)
-    .reduce((sum, payment) => sum + (payment.arrearsAmount ?? 0), 0)
-
-  return Math.max((house.openingArrears ?? 0) - paid, 0)
-}
-const rupiah = new Intl.NumberFormat('id-ID', {
-  style: 'currency',
-  currency: 'IDR',
-  maximumFractionDigits: 0,
+const seedHouses: House[] = people.map((owner, index) => {
+  const id = index + 1
+  const residenceStatus: ResidenceStatus = emptyIds.has(id) ? 'empty' : rented[id] ? 'rented' : 'owner_occupied'
+  return {
+    id, number: `CSJ ${id}`, owner, residenceStatus, tenant: rented[id] ?? '',
+    rentalStartDate: rented[id] ? '2026-01-01' : '', openingArrears: 0,
+    monthlyFeeOverride: id === 2 || id === 3 ? 157_500 : null,
+  }
 })
+
+const seedLedger: LedgerData = {
+  houses: seedHouses,
+  tariffs: [{ id: 'initial', effectiveDate: '2026-01-01', occupiedFee: DEFAULT_OCCUPIED_FEE, emptyFee: DEFAULT_EMPTY_FEE, notes: 'Tarif awal CSJ' }],
+  payments: [], expenses: [], openingCashBalance: 0, jointFee0203: DEFAULT_JOINT_FEE,
+  bankName: 'Bank Neo Commerce', bankAccountNumber: '5859457243882555', bankAccountHolder: 'Suwondo',
+}
+
 const residenceLabel: Record<ResidenceStatus, string> = {
-  owner_occupied: 'Owner occupied',
-  rented: 'Rented',
-  empty: 'Empty',
+  owner_occupied: 'Dihuni pemilik', rented: 'Disewa', empty: 'Kosong',
+}
+const expenseLabel: Record<string, string> = {
+  Security: 'Keamanan', Cleaning: 'Kebersihan', Maintenance: 'Perawatan',
+  Administration: 'Administrasi', Other: 'Lainnya',
 }
 
-const initialData = (): LedgerData => {
-  const fallback = {
-    houses: defaultHouses,
-    payments: [],
-    expenses: [],
-    openingCashBalance: 0,
-  }
-
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (!stored) return fallback
-    const parsed = JSON.parse(stored) as LedgerData
-
-    return {
-      houses: defaultHouses.map((seedHouse) => {
-        const storedHouse = parsed.houses?.find((house) => house.id === seedHouse.id)
-
-        if (!storedHouse) return seedHouse
-        return {
-          ...seedHouse,
-          ...storedHouse,
-          openingArrears: Number(storedHouse.openingArrears ?? 0),
-          monthlyFeeOverride:
-            storedHouse.monthlyFeeOverride ?? seedHouse.monthlyFeeOverride ?? null,
-        }
-      }),
-      payments: Array.isArray(parsed.payments)
-        ? parsed.payments.map((payment) => ({
-            ...payment,
-            paymentDate: payment.paymentDate ?? `${payment.month}-01`,
-            arrearsAmount: Number(payment.arrearsAmount ?? 0),
-          }))
-        : [],
-      expenses: Array.isArray(parsed.expenses) ? parsed.expenses : [],
-      openingCashBalance: Number(parsed.openingCashBalance ?? 0),
-    }
-  } catch {
-    return fallback
-  }
-}
-
-function toCsv(rows: Record<string, string | number>[]) {
-  if (rows.length === 0) return ''
-  const headers = Object.keys(rows[0])
-  const escape = (value: string | number) => {
-    const text = String(value)
-    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
-  }
-
-  return [
-    headers.join(','),
-    ...rows.map((row) => headers.map((header) => escape(row[header])).join(',')),
-  ].join('\n')
-}
-
-function downloadCsv(filename: string, rows: Record<string, string | number>[]) {
-  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(url)
+function StatusGrid({ accounts, selectedId, onSelect }: {
+  accounts: ReturnType<typeof statementForAccount>[]
+  selectedId: string
+  onSelect: (account: BillingAccount) => void
+}) {
+  return <div className="status-grid">
+    {accounts.map((account) => <button
+      className={`status-house ${account.isPaid ? 'paid' : 'due'} ${selectedId === account.id ? 'selected' : ''}`}
+      key={account.id} onClick={() => onSelect(account)} type="button"
+      aria-label={`${account.code}, ${account.isPaid ? 'lunas' : 'belum lunas'}`}
+    >
+      <strong>{account.shortCode}</strong>
+      <span>{account.isPaid ? <Check size={13} /> : null}{account.isPaid ? 'Lunas' : 'Belum'}</span>
+    </button>)}
+  </div>
 }
 
 function App() {
-  const [data, setData] = useState<LedgerData>(() => initialData())
-  const [isAdmin, setIsAdmin] = useState(!supabaseConfigured)
-  const [isLoading, setIsLoading] = useState(supabaseConfigured)
+  const [data, setData] = useState<LedgerData>(seedLedger)
+  const [activeMonth, setActiveMonth] = useState(currentMonth < '2026-01' ? '2026-01' : currentMonth)
+  const [publicView, setPublicView] = useState<PublicView>('overview')
+  const [adminView, setAdminView] = useState<AdminView>('payments')
+  const [mode, setMode] = useState<'public' | 'admin'>('public')
+  const [selectedAccountId, setSelectedAccountId] = useState('account-01')
+  const [loading, setLoading] = useState(true)
+  const [canEdit, setCanEdit] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
   const [showLogin, setShowLogin] = useState(false)
-  const [statusMessage, setStatusMessage] = useState('')
-  const [bankCopied, setBankCopied] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
-  const [activeMonth, setActiveMonth] = useState(monthNow())
-  const [activeTab, setActiveTab] = useState<Tab>('summary')
-  const [selectedHouseId, setSelectedHouseId] = useState(1)
-  const [query, setQuery] = useState('')
-  const [paymentForm, setPaymentForm] = useState({
-    mandatoryAmount: String(OCCUPIED_FEE),
-    arrearsAmount: '0',
-    extraAmount: '0',
-    extraType: 'None',
-    method: 'Cash',
-    notes: '',
-  })
-  const [expenseForm, setExpenseForm] = useState({
-    date: dateNow(),
-    category: 'Security',
-    amount: '',
-    description: '',
-  })
+  const [paymentForm, setPaymentForm] = useState({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
+  const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Security', amount: '', description: '' })
+  const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
+  const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
+  const [houseQuery, setHouseQuery] = useState('')
 
-  const canEdit = !supabaseConfigured || isAdmin
+  const loadData = async () => {
+    setLoading(true); setError('')
+    try {
+      const ledger = supabaseConfigured ? await loadRemoteLedger() : JSON.parse(localStorage.getItem('csj-ledger-v2') || 'null') ?? seedLedger
+      setData(ledger)
+      setSettingsForm({
+        openingCashBalance: String(ledger.openingCashBalance), jointFee0203: String(ledger.jointFee0203),
+        bankName: ledger.bankName, bankAccountNumber: ledger.bankAccountNumber, bankAccountHolder: ledger.bankAccountHolder,
+      })
+      setCanEdit(supabaseConfigured ? await currentUserIsAdmin() : true)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Data belum dapat dimuat.')
+    } finally { setLoading(false) }
+  }
 
+  // Initial loading intentionally synchronizes React with Supabase/local storage.
+  // oxlint-disable-next-line react/set-state-in-effect
+  useEffect(() => { void loadData() }, [])
   useEffect(() => {
-    if (!supabaseConfigured) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-    }
+    if (!supabaseConfigured) localStorage.setItem('csj-ledger-v2', JSON.stringify(data))
   }, [data])
-
   useEffect(() => {
     if (!supabase) return
-    let active = true
-
-    const syncRemoteState = async () => {
-      try {
-        const [ledger, admin] = await Promise.all([
-          loadRemoteLedger(),
-          currentUserIsAdmin(),
-        ])
-        if (!active) return
-        setData(ledger)
-        setIsAdmin(admin)
-        setStatusMessage('')
-      } catch (error) {
-        if (!active) return
-        setStatusMessage(
-          error instanceof Error ? error.message : 'Unable to load Supabase data.',
-        )
-      } finally {
-        if (active) setIsLoading(false)
-      }
-    }
-
-    void syncRemoteState()
-    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
-      void syncRemoteState()
-    })
-
-    return () => {
-      active = false
-      authListener.subscription.unsubscribe()
-    }
+    const { data: listener } = supabase.auth.onAuthStateChange(() => { void loadData() })
+    return () => listener.subscription.unsubscribe()
   }, [])
 
-  const selectedHouse =
-    data.houses.find((house) => house.id === selectedHouseId) ?? data.houses[0]
+  const accounts = useMemo(() => buildBillingAccounts(data.houses), [data.houses])
+  const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
+  const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
+  const cash = useMemo(() => cashSummary(data, activeMonth), [data, activeMonth])
+  const activeTariff = useMemo(() => tariffForMonth(data.tariffs, activeMonth), [data.tariffs, activeMonth])
+  const monthExpenses = data.expenses.filter((expense) => expense.date.startsWith(activeMonth))
+  const expected = statements.reduce((sum, account) => sum + account.monthlyDue, 0)
+  const collected = statements.reduce((sum, account) => sum + account.paidThisPeriod, 0)
+  const totalArrears = statements.reduce((sum, account) => sum + account.arrearsBalance, 0)
+  const unpaid = statements.filter((account) => !account.isPaid).length
+  const filteredHouses = data.houses.filter((house) => `${house.number} ${house.owner} ${house.tenant}`.toLowerCase().includes(houseQuery.toLowerCase()))
 
-  const monthPayments = useMemo(
-    () => data.payments.filter((payment) => payment.month === activeMonth),
-    [activeMonth, data.payments],
-  )
-
-  const monthExpenses = useMemo(
-    () => data.expenses.filter((expense) => expense.date.startsWith(activeMonth)),
-    [activeMonth, data.expenses],
-  )
-
-  const houseStats = useMemo(() => {
-    return data.houses.map((house) => {
-      const expected = feeFor(house)
-      const payments = monthPayments.filter((payment) => payment.houseId === house.id)
-      const mandatoryPaid = payments.reduce(
-        (sum, payment) => sum + payment.mandatoryAmount,
-        0,
-      )
-      const arrearsPaid = data.payments
-        .filter((payment) => payment.houseId === house.id)
-        .reduce((sum, payment) => sum + (payment.arrearsAmount ?? 0), 0)
-      const extraPaid = payments.reduce((sum, payment) => sum + payment.extraAmount, 0)
-      const balance = Math.max(expected - mandatoryPaid, 0)
-      const arrearsBalance = Math.max(house.openingArrears - arrearsPaid, 0)
-      const totalOutstanding = balance + arrearsBalance
-
-      return {
-        ...house,
-        expected,
-        mandatoryPaid,
-        arrearsPaid,
-        extraPaid,
-        totalPaid: mandatoryPaid + extraPaid,
-        balance,
-        arrearsBalance,
-        totalOutstanding,
-        paid: mandatoryPaid >= expected && arrearsBalance === 0,
-      }
-    })
-  }, [data.houses, data.payments, monthPayments])
-
-  const selectedStats =
-    houseStats.find((house) => house.id === selectedHouseId) ?? houseStats[0]
-
-  const summary = useMemo(() => {
-    const expected = houseStats.reduce((sum, house) => sum + house.expected, 0)
-    const mandatory = houseStats.reduce((sum, house) => sum + house.mandatoryPaid, 0)
-    const arrearsPaid = monthPayments.reduce(
-      (sum, payment) => sum + (payment.arrearsAmount ?? 0),
-      0,
-    )
-    const arrearsRemaining = houseStats.reduce(
-      (sum, house) => sum + house.arrearsBalance,
-      0,
-    )
-    const extra = houseStats.reduce((sum, house) => sum + house.extraPaid, 0)
-    const expenses = monthExpenses.reduce((sum, expense) => sum + expense.amount, 0)
-    const unpaid = houseStats.filter((house) => !house.paid).length
-
-    return {
-      expected,
-      mandatory,
-      extra,
-      arrearsPaid,
-      arrearsRemaining,
-      received: mandatory + extra + arrearsPaid,
-      expenses,
-      balance: data.openingCashBalance + mandatory + extra + arrearsPaid - expenses,
-      unpaid,
-      paid: houseStats.length - unpaid,
-    }
-  }, [data.openingCashBalance, houseStats, monthExpenses, monthPayments])
-
-  const filteredHouses = houseStats.filter((house) => {
-    const text = `${house.number} ${house.owner} ${house.tenant}`.toLowerCase()
-    return text.includes(query.toLowerCase())
-  })
-
-  const selectHouse = (houseId: number) => {
-    const house = data.houses.find((item) => item.id === houseId)
-    if (!house) return
-
-    setSelectedHouseId(houseId)
-    setPaymentForm((current) => ({
-      ...current,
-      mandatoryAmount: String(dueForHouse(house, data.payments, activeMonth)),
-      arrearsAmount: String(arrearsForHouse(house, data.payments)),
-    }))
+  const selectAccount = (account: BillingAccount) => {
+    const statement = statements.find((item) => item.id === account.id) ?? selected
+    setSelectedAccountId(account.id)
+    setPaymentForm((form) => ({ ...form, mandatory: String(statement.currentBalance), arrears: String(statement.arrearsBalance) }))
   }
 
-  const changeMonth = (month: string) => {
-    setActiveMonth(month)
-    setPaymentForm((current) => ({
-      ...current,
-      mandatoryAmount: String(dueForHouse(selectedHouse, data.payments, month)),
-      arrearsAmount: String(arrearsForHouse(selectedHouse, data.payments)),
-    }))
-  }
+  const flash = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
 
-  const updateHouse = (houseId: number, updates: Partial<House>) => {
-    const updatedHouse = {
-      ...data.houses.find((house) => house.id === houseId),
-      ...updates,
-    } as House
-
-    setData((current) => ({
-      ...current,
-      houses: current.houses.map((house) =>
-        house.id === houseId ? { ...house, ...updates } : house,
-      ),
-    }))
-
-    if (houseId === selectedHouseId) {
-      setPaymentForm((current) => ({
-        ...current,
-        mandatoryAmount: String(dueForHouse(updatedHouse, data.payments, activeMonth)),
-        arrearsAmount: String(arrearsForHouse(updatedHouse, data.payments)),
-      }))
-    }
-  }
-
-  const persistHouse = async (houseId: number) => {
-    if (!supabaseConfigured) return
-    const house = data.houses.find((item) => item.id === houseId)
-    if (!house) return
-    try {
-      await updateRemoteHouse(house)
-      setStatusMessage(`${house.number} saved.`)
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'House update failed.')
-    }
-  }
-
-  const savePayment = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!canEdit) return
-    const payment: Payment = {
-      id: crypto.randomUUID(),
-      houseId: selectedHouse.id,
-      month: activeMonth,
-      paymentDate: dateNow(),
-      mandatoryAmount: Number(paymentForm.mandatoryAmount || 0),
-      arrearsAmount: Number(paymentForm.arrearsAmount || 0),
-      extraAmount: Number(paymentForm.extraAmount || 0),
-      extraType: paymentForm.extraType,
-      method: paymentForm.method,
-      notes: paymentForm.notes.trim(),
-    }
-
-    if (
-      payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount <= 0
-    ) {
-      setStatusMessage('Payment amount must be greater than zero.')
-      return
-    }
-
-    try {
-      if (supabaseConfigured) await createRemotePayment(payment)
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Payment failed.')
-      return
-    }
-
-    setData((current) => ({
-      ...current,
-      payments: [payment, ...current.payments],
-    }))
-    setPaymentForm({
-      mandatoryAmount: '0',
-      arrearsAmount: '0',
-      extraAmount: '0',
-      extraType: 'None',
-      method: paymentForm.method,
-      notes: '',
-    })
-    setStatusMessage('Payment saved.')
-  }
-
-  const saveExpense = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!canEdit) return
-    if (!Number(expenseForm.amount)) return
-
-    const expense: Expense = {
-      id: crypto.randomUUID(),
-      date: expenseForm.date,
-      category: expenseForm.category,
-      amount: Number(expenseForm.amount),
-      description: expenseForm.description.trim(),
-    }
-
-    try {
-      if (supabaseConfigured) await createRemoteExpense(expense)
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Expense failed.')
-      return
-    }
-
-    setData((current) => ({
-      ...current,
-      expenses: [expense, ...current.expenses],
-    }))
-    setExpenseForm({
-      date: dateNow(),
-      category: expenseForm.category,
-      amount: '',
-      description: '',
-    })
-    setStatusMessage('Expense saved.')
-  }
-
-  const saveOpeningBalance = async () => {
-    if (!supabaseConfigured) return
-    try {
-      await updateRemoteOpeningBalance(data.openingCashBalance)
-      setStatusMessage('Opening balance saved.')
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Balance update failed.')
-    }
+  const copyAccount = async () => {
+    await navigator.clipboard.writeText(data.bankAccountNumber); setCopied(true)
+    window.setTimeout(() => setCopied(false), 1800)
   }
 
   const signIn = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!supabase) return
-    setStatusMessage('Signing in...')
-    const { error } = await supabase.auth.signInWithPassword(loginForm)
-    if (error) {
-      setStatusMessage(error.message)
-      return
-    }
-    setShowLogin(false)
-    setLoginForm({ email: '', password: '' })
-    setStatusMessage('Admin session active.')
+    event.preventDefault(); setError('')
+    if (!supabase) { setCanEdit(true); setMode('admin'); setShowLogin(false); return }
+    const { error: authError } = await supabase.auth.signInWithPassword(loginForm)
+    if (authError) { setError('Email atau kata sandi tidak sesuai.'); return }
+    const isAdmin = await currentUserIsAdmin()
+    if (!isAdmin) { await supabase.auth.signOut(); setError('Akun ini tidak memiliki akses admin.'); return }
+    setCanEdit(true); setMode('admin'); setShowLogin(false); await loadData()
   }
 
   const signOut = async () => {
-    if (!supabase) return
-    await supabase.auth.signOut()
-    setIsAdmin(false)
-    setStatusMessage('Signed out.')
+    if (supabase) await supabase.auth.signOut()
+    setCanEdit(false); setMode('public'); flash('Anda telah keluar dari mode admin.')
   }
 
-  const copyBankAccount = async () => {
-    try {
-      await navigator.clipboard.writeText(BANK_ACCOUNT)
-      setBankCopied(true)
-      window.setTimeout(() => setBankCopied(false), 1800)
-    } catch {
-      setStatusMessage(`Nomor rekening: ${BANK_ACCOUNT}`)
+  const savePayment = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const payment: Payment = {
+      id: crypto.randomUUID(), houseId: selected.houseIds[0], month: activeMonth, paymentDate: today,
+      mandatoryAmount: Number(paymentForm.mandatory), arrearsAmount: Number(paymentForm.arrears),
+      extraAmount: Number(paymentForm.extra), extraType: paymentForm.extraType,
+      method: paymentForm.method, notes: paymentForm.notes,
     }
+    if (payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount <= 0) { setError('Jumlah pembayaran harus lebih dari nol.'); return }
+    try {
+      if (supabaseConfigured) await createRemotePayment(payment)
+      setData((current) => ({ ...current, payments: [payment, ...current.payments] }))
+      setPaymentForm({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
+      flash(`Pembayaran ${selected.code} berhasil dicatat.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran gagal disimpan.') }
   }
 
-  const exportPayments = () => {
-    downloadCsv(
-      `csj-payments-${activeMonth}.csv`,
-      monthPayments.map((payment) => {
-        const house = data.houses.find((item) => item.id === payment.houseId)
-        return {
-          month: payment.month,
-          house_number: house?.number ?? '',
-          owner: house?.owner ?? '',
-          mandatory_amount: payment.mandatoryAmount,
-          arrears_amount: payment.arrearsAmount,
-          extra_amount: payment.extraAmount,
-          extra_type: payment.extraType,
-          method: payment.method,
-          notes: payment.notes,
-        }
-      }),
-    )
+  const removePayment = async (payment: Payment) => {
+    if (!window.confirm('Hapus catatan pembayaran ini?')) return
+    try {
+      if (supabaseConfigured) await deleteRemotePayment(payment.id)
+      setData((current) => ({ ...current, payments: current.payments.filter((item) => item.id !== payment.id) }))
+      flash('Catatan pembayaran dihapus.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran gagal dihapus.') }
   }
 
-  const exportExpenses = () => {
-    downloadCsv(
-      `csj-expenses-${activeMonth}.csv`,
-      monthExpenses.map((expense) => ({
-        date: expense.date,
-        category: expense.category,
-        amount: expense.amount,
-        description: expense.description,
-      })),
-    )
+  const saveExpense = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const expense: Expense = { id: crypto.randomUUID(), date: expenseForm.date, category: expenseForm.category, amount: Number(expenseForm.amount), description: expenseForm.description }
+    if (expense.amount <= 0) { setError('Jumlah pengeluaran harus lebih dari nol.'); return }
+    try {
+      if (supabaseConfigured) await createRemoteExpense(expense)
+      setData((current) => ({ ...current, expenses: [expense, ...current.expenses] }))
+      setExpenseForm({ date: today, category: 'Security', amount: '', description: '' }); flash('Pengeluaran berhasil dicatat.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pengeluaran gagal disimpan.') }
   }
 
-  const exportMonthlyReport = () => {
-    downloadCsv(
-      `csj-monthly-report-${activeMonth}.csv`,
-      houseStats.map((house) => ({
-        month: activeMonth,
-        house_number: house.number,
-        owner: house.owner,
-        residence_status: house.residenceStatus,
-        tenant: house.tenant,
-        rental_start_date: house.rentalStartDate,
-        expected_mandatory: house.expected,
-        mandatory_paid: house.mandatoryPaid,
-        opening_arrears: house.openingArrears,
-        arrears_paid: house.arrearsPaid,
-        arrears_remaining: house.arrearsBalance,
-        extra_paid: house.extraPaid,
-        current_month_outstanding: house.balance,
-        total_outstanding: house.totalOutstanding,
-        status: house.paid ? 'Paid' : 'Unpaid',
-      })),
-    )
+  const removeExpense = async (expense: Expense) => {
+    if (!window.confirm('Hapus catatan pengeluaran ini?')) return
+    try {
+      if (supabaseConfigured) await deleteRemoteExpense(expense.id)
+      setData((current) => ({ ...current, expenses: current.expenses.filter((item) => item.id !== expense.id) }))
+      flash('Catatan pengeluaran dihapus.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pengeluaran gagal dihapus.') }
   }
 
-  const selectedHistory = data.payments
-    .filter((payment) => payment.houseId === selectedHouse.id)
-    .slice(0, 6)
-
-  if (isLoading) {
-    return (
-      <main className="app-shell loading-shell">
-        <LoaderCircle className="spin" size={28} />
-        <p>Memuat data iuran warga...</p>
-      </main>
-    )
+  const patchHouse = (id: number, patch: Partial<House>) => setData((current) => ({ ...current, houses: current.houses.map((house) => house.id === id ? { ...house, ...patch } : house) }))
+  const persistHouse = async (house: House) => {
+    try { if (supabaseConfigured) await updateRemoteHouse(house); flash(`${house.number} diperbarui.`) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
   }
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-block">
-          <p className="eyebrow">Transparansi Kas Warga</p>
-          <h1>Monitoring Iuran Warga CSJ</h1>
-          <p className="brand-copy">Catatan iuran, tunggakan, dan penggunaan kas lingkungan.</p>
-        </div>
-        <div className="topbar-actions">
-          {canEdit && (
-          <label className="opening-cash">
-            <Landmark size={18} />
-            <span>Saldo awal</span>
-            <input
-              aria-label="Opening cash balance"
-              min="0"
-              step="1000"
-              type="number"
-              value={data.openingCashBalance}
-              disabled={!canEdit}
-              onChange={(event) =>
-                setData((current) => ({
-                  ...current,
-                  openingCashBalance: Number(event.target.value || 0),
-                }))
-              }
-              onBlur={() => void saveOpeningBalance()}
-            />
-          </label>
-          )}
-          <label className="month-picker">
-            <CalendarDays size={18} />
-            <input
-              aria-label="Active month"
-              type="month"
-              value={activeMonth}
-              onChange={(event) => changeMonth(event.target.value)}
-            />
-          </label>
-          {supabaseConfigured &&
-            (isAdmin ? (
-              <button className="secondary-action" onClick={() => void signOut()} type="button">
-                <LogOut size={17} />
-                Keluar
-              </button>
-            ) : (
-              <button
-                className="secondary-action"
-                onClick={() => setShowLogin(true)}
-                type="button"
-              >
-                <LogIn size={17} />
-                Login Admin
-              </button>
-            ))}
-        </div>
-      </header>
+  const saveSettings = async (event: FormEvent) => {
+    event.preventDefault()
+    const next = {
+      openingCashBalance: Number(settingsForm.openingCashBalance), jointFee0203: Number(settingsForm.jointFee0203),
+      bankName: settingsForm.bankName, bankAccountNumber: settingsForm.bankAccountNumber, bankAccountHolder: settingsForm.bankAccountHolder,
+    }
+    try {
+      if (supabaseConfigured) await updateRemoteSettings({
+        opening_cash_balance: next.openingCashBalance, joint_fee_02_03: next.jointFee0203,
+        bank_name: next.bankName, bank_account_number: next.bankAccountNumber, bank_account_holder: next.bankAccountHolder,
+      })
+      setData((current) => ({ ...current, ...next })); flash('Pengaturan berhasil disimpan.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pengaturan gagal disimpan.') }
+  }
 
-      {statusMessage && (
-        <div className="status-banner" role="status">
-          {statusMessage}
-        </div>
-      )}
+  const saveTariff = async (event: FormEvent) => {
+    event.preventDefault()
+    const tariff: Tariff = { id: crypto.randomUUID(), effectiveDate: tariffForm.effectiveDate, occupiedFee: Number(tariffForm.occupiedFee), emptyFee: Number(tariffForm.emptyFee), notes: tariffForm.notes }
+    try {
+      if (supabaseConfigured) await createRemoteTariff(tariff)
+      setData((current) => ({ ...current, tariffs: [...current.tariffs, tariff].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate)) }))
+      setTariffForm((form) => ({ ...form, notes: '' })); flash('Tarif baru berhasil ditambahkan.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Tarif gagal disimpan.') }
+  }
 
-      <nav className="tabbar" aria-label="Dashboard pages">
-        <button
-          className={activeTab === 'summary' ? 'active' : ''}
-          onClick={() => setActiveTab('summary')}
-          type="button"
-        >
-          <Banknote size={18} />
-          Ringkasan
-        </button>
-        <button
-          className={activeTab === 'collection' ? 'active' : ''}
-          onClick={() => setActiveTab('collection')}
-          type="button"
-        >
-          <ReceiptText size={18} />
-          Iuran Warga
-        </button>
-        <button
-          className={activeTab === 'expenses' ? 'active' : ''}
-          onClick={() => setActiveTab('expenses')}
-          type="button"
-        >
-          <WalletCards size={18} />
-          Pengeluaran
-        </button>
+  const selectedPayments = data.payments.filter((payment) => selected?.houseIds.includes(payment.houseId)).sort((a, b) => b.paymentDate.localeCompare(a.paymentDate))
+
+  if (loading) return <main className="loading-screen"><div className="brand-mark">CSJ</div><p>Menyiapkan laporan kas warga…</p></main>
+
+  return <main className="app-shell">
+    <header className="site-header">
+      <div className="brand"><div className="brand-mark">CSJ</div><div><span>Transparansi kas warga</span><h1>Monitoring Iuran Warga CSJ</h1></div></div>
+      <div className="header-actions">
+        <label className="month-control"><CalendarDays size={17} /><span>Periode</span><input type="month" min="2026-01" value={activeMonth} onChange={(event) => setActiveMonth(event.target.value)} /></label>
+        {canEdit ? <button className="admin-button" onClick={() => setMode(mode === 'admin' ? 'public' : 'admin')} type="button"><ShieldCheck size={18} />{mode === 'admin' ? 'Lihat halaman warga' : 'Buka admin'}</button> : <button className="admin-button" onClick={() => setShowLogin(true)} type="button"><LogIn size={18} />Login Admin</button>}
+      </div>
+    </header>
+
+    {notice && <div className="notice"><CheckCircle2 size={18} />{notice}</div>}
+    {error && <div className="error-banner"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError('')} aria-label="Tutup"><X size={17} /></button></div>}
+
+    {mode === 'public' ? <>
+      <nav className="public-nav" aria-label="Navigasi warga">
+        <button className={publicView === 'overview' ? 'active' : ''} onClick={() => setPublicView('overview')}><Home size={18} />Ringkasan</button>
+        <button className={publicView === 'dues' ? 'active' : ''} onClick={() => setPublicView('dues')}><ReceiptText size={18} />Status Iuran</button>
+        <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Pengeluaran</button>
       </nav>
 
-      {activeTab === 'summary' && (
-        <section className="page-layer">
-          <section className="public-overview">
-            <div className="payment-band">
-              <div className="payment-icon"><CreditCard size={26} /></div>
-              <div className="payment-copy">
-                <p className="eyebrow">Informasi Pembayaran</p>
-                <h2>{BANK_NAME}</h2>
-                <strong>{BANK_ACCOUNT}</strong>
-                <span>a.n. {BANK_ACCOUNT_HOLDER}</span>
-              </div>
-              <button className="copy-account" onClick={() => void copyBankAccount()} type="button">
-                {bankCopied ? <Check size={18} /> : <Copy size={18} />}
-                {bankCopied ? 'Tersalin' : 'Salin Nomor Rekening'}
-              </button>
-            </div>
-
-            <div className="balance-hero" aria-label="Ringkasan kas">
-              <div>
-                <p className="eyebrow">Saldo Kas</p>
-                <strong>{rupiah.format(summary.balance)}</strong>
-              </div>
-              <div className="balance-breakdown">
-                <span>Pemasukan {rupiah.format(summary.received)}</span>
-                <span>Pengeluaran {rupiah.format(summary.expenses)}</span>
-                <span>Saldo awal {rupiah.format(data.openingCashBalance)}</span>
-              </div>
-            </div>
-          </section>
-
-          <section className="summary-grid" aria-label="Monthly summary">
-            <article className="metric">
-              <span>Target iuran</span>
-              <strong>{rupiah.format(summary.expected)}</strong>
-            </article>
-            <article className="metric good">
-              <span>Pemasukan</span>
-              <strong>{rupiah.format(summary.received)}</strong>
-            </article>
-            <article className="metric">
-              <span>Pengeluaran</span>
-              <strong>{rupiah.format(summary.expenses)}</strong>
-            </article>
-            <article className="metric alert">
-              <span>Total tunggakan lama</span>
-              <strong>{rupiah.format(summary.arrearsRemaining)}</strong>
-            </article>
-            <article className="metric alert">
-              <span>Belum lunas bulan ini</span>
-              <strong>{summary.unpaid} rumah</strong>
-            </article>
-          </section>
-
-          <section className="panel public-house-selector">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Status Iuran {activeMonth}</p>
-                <h2>Pilih Rumah</h2>
-              </div>
-              <span className={`status-pill ${selectedStats.paid ? 'paid' : 'due'}`}>
-                {selectedStats.paid ? 'Lunas' : 'Belum lunas'}
-              </span>
-            </div>
-            <div className="house-number-grid" aria-label="Pilih nomor rumah">
-              {houseStats.map((house) => (
-                <button
-                  className={`${selectedHouseId === house.id ? 'selected' : ''} ${house.paid ? 'paid' : 'due'}`}
-                  key={house.id}
-                  onClick={() => selectHouse(house.id)}
-                  type="button"
-                  aria-label={`Rumah ${String(house.id).padStart(2, '0')}`}
-                >
-                  {String(house.id).padStart(2, '0')}
-                </button>
-              ))}
-            </div>
-            <div className="public-house-detail">
-              <div>
-                <p className="eyebrow">CSJ {String(selectedHouse.id).padStart(2, '0')}</p>
-                <h3>{selectedHouse.residenceStatus === 'rented' && selectedHouse.tenant ? selectedHouse.tenant : selectedHouse.owner}</h3>
-                <span>{residenceLabel[selectedHouse.residenceStatus]}</span>
-              </div>
-              <dl>
-                <div><dt>Tagihan bulan ini</dt><dd>{rupiah.format(selectedStats.expected)}</dd></div>
-                <div><dt>Sudah dibayar</dt><dd>{rupiah.format(selectedStats.mandatoryPaid)}</dd></div>
-                <div><dt>Sisa + tunggakan</dt><dd>{rupiah.format(selectedStats.totalOutstanding)}</dd></div>
-              </dl>
-            </div>
-          </section>
-
-          <section className="summary-details">
-            <div className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Daftar belum lunas</p>
-                  <h2>Tunggakan Warga</h2>
-                </div>
-                <button
-                  className="secondary-action"
-                  onClick={exportMonthlyReport}
-                  type="button"
-                >
-                  <Download size={18} />
-                  Unduh laporan
-                </button>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Rumah</th>
-                      <th>Nama</th>
-                      <th>Iuran bulan ini</th>
-                      <th>Tunggakan lama</th>
-                      <th>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {houseStats
-                      .filter((house) => house.totalOutstanding > 0)
-                      .map((house) => (
-                        <tr key={house.id}>
-                          <td>{house.number}</td>
-                          <td>
-                            {house.residenceStatus === 'rented' && house.tenant
-                              ? house.tenant
-                              : house.owner}
-                          </td>
-                          <td>{rupiah.format(house.balance)}</td>
-                          <td>{rupiah.format(house.arrearsBalance)}</td>
-                          <td>{rupiah.format(house.totalOutstanding)}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
+      {publicView === 'overview' && <div className="page-stack">
+        <section className="welcome-panel">
+          <div><span className="section-kicker">Laporan {monthLabel(activeMonth)}</span><h2>Kas warga, terbuka untuk semua.</h2><p>Lihat pembayaran iuran, tunggakan, serta penggunaan dana lingkungan CSJ dalam satu halaman.</p></div>
+          <div className="cash-highlight"><span>Saldo kas saat ini</span><strong>{rupiah.format(cash.cashBalance)}</strong><small>Saldo awal + seluruh pemasukan − seluruh pengeluaran</small></div>
         </section>
-      )}
-
-      {activeTab === 'collection' && (
-        <section className="page-layer">
-          <section className="workspace">
-            <div className="panel house-panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Collection board</p>
-                  <h2>Houses</h2>
-                </div>
-                <div className="search-box">
-                  <Search size={16} />
-                  <input
-                    aria-label="Search house or owner"
-                    placeholder="Search"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="house-grid">
-                {filteredHouses.map((house) => (
-                  <button
-                    className={`house-button ${house.paid ? 'paid' : 'due'} ${
-                      selectedHouseId === house.id ? 'selected' : ''
-                    }`}
-                    key={house.id}
-                    onClick={() => selectHouse(house.id)}
-                    type="button"
-                  >
-                    <span className="house-number">{house.number}</span>
-                    <span className="owner-name">
-                      {house.residenceStatus === 'rented' && house.tenant
-                        ? house.tenant
-                        : house.owner}
-                    </span>
-                    <span className="occupant-chip">
-                      {residenceLabel[house.residenceStatus]}
-                    </span>
-                    <span className="house-status">
-                      {house.paid ? <Check size={14} /> : <ReceiptText size={14} />}
-                      {house.paid ? 'Paid' : rupiah.format(house.totalOutstanding)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <aside className="panel payment-panel">
-              <div className="selected-house">
-                <div className="house-avatar">
-                  <Home size={24} />
-                </div>
-                <div>
-                  <p className="eyebrow">Selected house</p>
-                  <h2>
-                    {selectedHouse.number} - {selectedHouse.owner}
-                  </h2>
-                  <p>
-                    {residenceLabel[selectedHouse.residenceStatus]} bill:{' '}
-                    {rupiah.format(selectedStats.expected)}
-                  </p>
-                  {selectedHouse.residenceStatus === 'rented' && (
-                    <p>
-                      Tenant: {selectedHouse.tenant || 'Not filled'} · Since:{' '}
-                      {selectedHouse.rentalStartDate || 'Not filled'}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {canEdit ? (
-              <form className="form-stack" onSubmit={savePayment}>
-                <div className="payment-period">
-                  <span>Payment period</span>
-                  <strong>{activeMonth}</strong>
-                </div>
-                <div className="split-fields">
-                  <label>
-                    Mandatory
-                    <input
-                      min="0"
-                      step="1000"
-                      type="number"
-                      value={paymentForm.mandatoryAmount}
-                      onChange={(event) =>
-                        setPaymentForm({
-                          ...paymentForm,
-                          mandatoryAmount: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Previous unpaid
-                    <input
-                      min="0"
-                      step="1000"
-                      type="number"
-                      value={paymentForm.arrearsAmount}
-                      onChange={(event) =>
-                        setPaymentForm({
-                          ...paymentForm,
-                          arrearsAmount: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="split-fields">
-                  <label>
-                    Extra
-                    <input
-                      min="0"
-                      step="1000"
-                      type="number"
-                      value={paymentForm.extraAmount}
-                      onChange={(event) =>
-                        setPaymentForm({
-                          ...paymentForm,
-                          extraAmount: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Extra type
-                    <select
-                      value={paymentForm.extraType}
-                      onChange={(event) =>
-                        setPaymentForm({
-                          ...paymentForm,
-                          extraType: event.target.value,
-                        })
-                      }
-                    >
-                      <option>None</option>
-                      <option>Penalty</option>
-                      <option>Charity</option>
-                      <option>Other</option>
-                    </select>
-                  </label>
-                  <label>
-                    Method
-                    <select
-                      value={paymentForm.method}
-                      onChange={(event) =>
-                        setPaymentForm({ ...paymentForm, method: event.target.value })
-                      }
-                    >
-                      <option>Cash</option>
-                      <option>Transfer</option>
-                      <option>QRIS</option>
-                      <option>Other</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  Notes
-                  <input
-                    placeholder="Optional"
-                    value={paymentForm.notes}
-                    onChange={(event) =>
-                      setPaymentForm({ ...paymentForm, notes: event.target.value })
-                    }
-                  />
-                </label>
-                <button className="primary-action" type="submit">
-                  <Plus size={18} />
-                  Save payment
-                </button>
-              </form>
-              ) : (
-                <div className="read-only-note">
-                  <LogIn size={18} />
-                  <span>Public view. Admin login is required to record payments.</span>
-                </div>
-              )}
-
-              <div className="history-block">
-                <h3>Recent payments</h3>
-                {selectedHistory.length ? (
-                  selectedHistory.map((payment) => (
-                    <div className="history-row" key={payment.id}>
-                      <span>{payment.month}</span>
-                      <strong>
-                        {rupiah.format(
-                          payment.mandatoryAmount +
-                            (payment.arrearsAmount ?? 0) +
-                            payment.extraAmount,
-                        )}
-                      </strong>
-                    </div>
-                  ))
-                ) : (
-                  <p className="empty-state">No payments recorded yet.</p>
-                )}
-              </div>
-              <button className="secondary-action full-width" onClick={exportPayments} type="button">
-                <Download size={18} />
-                Payments
-              </button>
-            </aside>
-          </section>
-
-          {canEdit && (
-          <section className="panel owner-editor collection-setup">
-            <div className="panel-heading compact">
-              <div>
-                <p className="eyebrow">Setup</p>
-                <h3>House data</h3>
-              </div>
-              <Settings size={20} />
-            </div>
-            <div className="owner-list">
-              {data.houses.map((house) => (
-                <div className="owner-row" key={house.id}>
-                  <span>{house.number}</span>
-                  <input
-                    aria-label={`${house.number} owner`}
-                    value={house.owner}
-                    onBlur={() => void persistHouse(house.id)}
-                    onChange={(event) =>
-                      updateHouse(house.id, { owner: event.target.value })
-                    }
-                  />
-                  <select
-                    aria-label={`${house.number} residence status`}
-                    value={house.residenceStatus}
-                    onChange={(event) =>
-                      updateHouse(house.id, {
-                        residenceStatus: event.target.value as ResidenceStatus,
-                      })
-                    }
-                    onBlur={() => void persistHouse(house.id)}
-                  >
-                    <option value="owner_occupied">Owner</option>
-                    <option value="rented">Rented</option>
-                    <option value="empty">Empty</option>
-                  </select>
-                  <input
-                    aria-label={`${house.number} tenant`}
-                    placeholder="Tenant"
-                    value={house.tenant}
-                    onBlur={() => void persistHouse(house.id)}
-                    onChange={(event) =>
-                      updateHouse(house.id, { tenant: event.target.value })
-                    }
-                  />
-                  <input
-                    aria-label={`${house.number} rental start`}
-                    type="date"
-                    value={house.rentalStartDate}
-                    onBlur={() => void persistHouse(house.id)}
-                    onChange={(event) =>
-                      updateHouse(house.id, { rentalStartDate: event.target.value })
-                    }
-                  />
-                  <input
-                    aria-label={`${house.number} opening arrears`}
-                    min="0"
-                    placeholder="Arrears"
-                    step="1000"
-                    type="number"
-                    value={house.openingArrears}
-                    onBlur={() => void persistHouse(house.id)}
-                    onChange={(event) =>
-                      updateHouse(house.id, {
-                        openingArrears: Number(event.target.value || 0),
-                      })
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </section>
-          )}
+        <section className="money-grid">
+          <article><div className="metric-icon income"><Banknote size={21} /></div><span>Pemasukan bulan ini</span><strong>{rupiah.format(cash.monthIncome)}</strong></article>
+          <article><div className="metric-icon expense"><WalletCards size={21} /></div><span>Pengeluaran bulan ini</span><strong>{rupiah.format(cash.monthExpenses)}</strong></article>
+          <article><div className="metric-icon target"><Users size={21} /></div><span>Target iuran</span><strong>{rupiah.format(expected)}</strong></article>
+          <article><div className="metric-icon warning"><CircleAlert size={21} /></div><span>Belum lunas</span><strong>{unpaid} akun</strong></article>
         </section>
-      )}
-
-      {activeTab === 'expenses' && (
-        <section className="page-layer">
-          <div className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Money out</p>
-                <h2>Expenses</h2>
-              </div>
-              <button className="secondary-action" onClick={exportExpenses} type="button">
-                <Download size={18} />
-                Expenses
-              </button>
-            </div>
-            {canEdit && (
-            <form className="expense-form" onSubmit={saveExpense}>
-              <input
-                aria-label="Expense date"
-                type="date"
-                value={expenseForm.date}
-                onChange={(event) =>
-                  setExpenseForm({ ...expenseForm, date: event.target.value })
-                }
-              />
-              <select
-                aria-label="Expense category"
-                value={expenseForm.category}
-                onChange={(event) =>
-                  setExpenseForm({ ...expenseForm, category: event.target.value })
-                }
-              >
-                <option>Security</option>
-                <option>Cleaning</option>
-                <option>Maintenance</option>
-                <option>Administration</option>
-                <option>Other</option>
-              </select>
-              <input
-                aria-label="Expense amount"
-                min="0"
-                placeholder="Amount"
-                step="1000"
-                type="number"
-                value={expenseForm.amount}
-                onChange={(event) =>
-                  setExpenseForm({ ...expenseForm, amount: event.target.value })
-                }
-              />
-              <input
-                aria-label="Expense description"
-                placeholder="Description"
-                value={expenseForm.description}
-                onChange={(event) =>
-                  setExpenseForm({ ...expenseForm, description: event.target.value })
-                }
-              />
-              <button className="icon-action" title="Save expense" type="submit">
-                <Plus size={18} />
-              </button>
-            </form>
-            )}
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Category</th>
-                    <th>Description</th>
-                    <th>Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthExpenses.map((expense) => (
-                    <tr key={expense.id}>
-                      <td>{expense.date}</td>
-                      <td>{expense.category}</td>
-                      <td>{expense.description || '-'}</td>
-                      <td>{rupiah.format(expense.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        <section className="overview-grid">
+          <article className="bank-card">
+            <div className="bank-heading"><div className="bank-icon"><CreditCard size={25} /></div><div><span>Informasi pembayaran</span><h3>{data.bankName}</h3></div></div>
+            <div className="account-number"><span>Nomor rekening</span><strong>{data.bankAccountNumber}</strong><small>a.n. {data.bankAccountHolder}</small></div>
+            <button onClick={() => void copyAccount()} type="button">{copied ? <Check size={17} /> : <Copy size={17} />}{copied ? 'Nomor tersalin' : 'Salin nomor rekening'}</button>
+          </article>
+          <article className="progress-card">
+            <div className="panel-title"><div><span>Progres bulan ini</span><h3>{monthLabel(activeMonth)}</h3></div><strong>{expected ? Math.round(collected / expected * 100) : 0}%</strong></div>
+            <div className="progress-track"><span style={{ width: `${Math.min(expected ? collected / expected * 100 : 0, 100)}%` }} /></div>
+            <dl><div><dt>Terkumpul</dt><dd>{rupiah.format(collected)}</dd></div><div><dt>Tunggakan lama</dt><dd>{rupiah.format(totalArrears)}</dd></div></dl>
+          </article>
         </section>
-      )}
+        <section className="panel status-preview">
+          <div className="panel-title"><div><span>Status pembayaran</span><h3>Pilih akun rumah</h3></div><button className="text-button" onClick={() => setPublicView('dues')}>Lihat lengkap →</button></div>
+          <StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} />
+          <div className="selected-summary"><div><span>{selected.code}</span><h3>{selected.residentName}</h3><small>{selected.houseIds.length === 2 ? 'Satu akun gabungan untuk dua rumah' : residenceLabel[selected.residenceStatus]}</small></div><dl><div><dt>Tagihan bulan ini</dt><dd>{rupiah.format(selected.monthlyDue)}</dd></div><div><dt>Sudah dibayar</dt><dd>{rupiah.format(selected.paidThisPeriod)}</dd></div><div><dt>Total belum dibayar</dt><dd>{rupiah.format(selected.totalOutstanding)}</dd></div></dl><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+        </section>
+      </div>}
 
-      {showLogin && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="login-dialog" role="dialog" aria-modal="true" aria-label="Admin login">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Private administration</p>
-                <h2>Admin login</h2>
-              </div>
-              <button
-                className="dialog-close"
-                aria-label="Close login"
-                onClick={() => setShowLogin(false)}
-                type="button"
-              >
-                &times;
-              </button>
-            </div>
-            <form className="form-stack" onSubmit={signIn}>
-              <label>
-                Email
-                <input
-                  autoComplete="email"
-                  type="email"
-                  required
-                  value={loginForm.email}
-                  onChange={(event) =>
-                    setLoginForm({ ...loginForm, email: event.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  autoComplete="current-password"
-                  type="password"
-                  required
-                  value={loginForm.password}
-                  onChange={(event) =>
-                    setLoginForm({ ...loginForm, password: event.target.value })
-                  }
-                />
-              </label>
-              <button className="primary-action" type="submit">
-                <LogIn size={18} />
-                Sign in
-              </button>
-            </form>
-          </section>
-        </div>
-      )}
-    </main>
-  )
+      {publicView === 'dues' && <section className="panel page-panel">
+        <div className="panel-title"><div><span>Status {monthLabel(activeMonth)}</span><h2>Status Iuran Warga</h2><p>CSJ02 dan CSJ03 tercatat sebagai satu akun pembayaran.</p></div><div className="legend"><span><i className="dot paid" />Lunas</span><span><i className="dot due" />Belum lunas</span></div></div>
+        <StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} />
+        <div className="selected-summary large"><div><span>{selected.code}</span><h3>{selected.residentName}</h3><small>{selected.houseIds.length === 2 ? 'Akun pembayaran gabungan' : residenceLabel[selected.residenceStatus]}</small></div><dl><div><dt>Tagihan periode</dt><dd>{rupiah.format(selected.monthlyDue)}</dd></div><div><dt>Terbayar periode</dt><dd>{rupiah.format(selected.paidThisPeriod)}</dd></div><div><dt>Tunggakan sebelumnya</dt><dd>{rupiah.format(selected.arrearsBalance)}</dd></div><div><dt>Total kewajiban</dt><dd>{rupiah.format(selected.totalOutstanding)}</dd></div></dl><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+        <div className="table-wrap"><table><thead><tr><th>Akun</th><th>Nama</th><th>Tagihan</th><th>Terbayar</th><th>Tunggakan</th><th>Status</th></tr></thead><tbody>{statements.map((item) => <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.residentName}</td><td>{rupiah.format(item.monthlyDue)}</td><td>{rupiah.format(item.paidThisPeriod)}</td><td>{rupiah.format(item.arrearsBalance)}</td><td><span className={`mini-status ${item.isPaid ? 'paid' : 'due'}`}>{item.isPaid ? 'Lunas' : 'Belum'}</span></td></tr>)}</tbody></table></div>
+      </section>}
+
+      {publicView === 'expenses' && <section className="panel page-panel">
+        <div className="panel-title"><div><span>Laporan {monthLabel(activeMonth)}</span><h2>Pengeluaran Kas</h2><p>Rincian penggunaan dana lingkungan pada periode yang dipilih.</p></div><div className="total-chip"><span>Total</span><strong>{rupiah.format(cash.monthExpenses)}</strong></div></div>
+        <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th></tr></thead><tbody>{monthExpenses.length ? monthExpenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{expenseLabel[expense.category] ?? expense.category}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td></tr>) : <tr><td colSpan={4}><div className="empty-state">Belum ada pengeluaran pada periode ini.</div></td></tr>}</tbody></table></div>
+      </section>}
+    </> : <section className="admin-layout">
+      <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
+        <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Pembayaran</button>
+        <button className={adminView === 'expenses' ? 'active' : ''} onClick={() => setAdminView('expenses')}><WalletCards size={18} />Pengeluaran</button>
+        <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
+        <button className={adminView === 'settings' ? 'active' : ''} onClick={() => setAdminView('settings')}><Settings2 size={18} />Pengaturan</button>
+      </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
+      <div className="admin-content">
+        {adminView === 'payments' && <>
+          <div className="admin-heading"><div><span>Pencatatan iuran</span><h2>Pembayaran Warga</h2><p>Pilih akun, periksa kewajiban, lalu catat pembayarannya.</p></div><div className="admin-stat"><span>Periode</span><strong>{monthLabel(activeMonth)}</strong></div></div>
+          <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayaran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
+          <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
+            <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
+            <form className="form-grid" onSubmit={savePayment}><label>Iuran bulan ini<input type="number" min="0" step="1000" value={paymentForm.mandatory} onChange={(e) => setPaymentForm({ ...paymentForm, mandatory: e.target.value })} /></label><label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label><label>Tambahan<input type="number" min="0" step="1000" value={paymentForm.extra} onChange={(e) => setPaymentForm({ ...paymentForm, extra: e.target.value })} /></label><label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Lainnya</option></select></label><label>Metode<select value={paymentForm.method} onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label><label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran</button></form>
+          </section></div>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Iuran</th><th>Tunggakan</th><th>Tambahan</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{rupiah.format(payment.mandatoryAmount)}</td><td>{rupiah.format(payment.arrearsAmount)}</td><td>{rupiah.format(payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus pembayaran"><Trash2 size={16} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada pembayaran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
+        </>}
+
+        {adminView === 'expenses' && <><div className="admin-heading"><div><span>Kas keluar</span><h2>Catat Pengeluaran</h2><p>Semua pengeluaran akan langsung muncul pada laporan warga.</p></div></div><section className="panel form-card horizontal"><form className="form-grid expense-entry" onSubmit={saveExpense}><label>Tanggal<input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} /></label><label>Kategori<select value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}><option value="Security">Keamanan</option><option value="Cleaning">Kebersihan</option><option value="Maintenance">Perawatan</option><option value="Administration">Administrasi</option><option value="Other">Lainnya</option></select></label><label>Jumlah<input type="number" min="0" step="1000" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} /></label><label>Keterangan<input placeholder="Contoh: perbaikan lampu" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} /></label><button className="primary-action" type="submit"><Plus size={18} />Simpan</button></form></section><section className="panel history-panel"><div className="panel-title"><div><span>Riwayat</span><h3>Semua Pengeluaran</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th><th /></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{expenseLabel[expense.category] ?? expense.category}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td><td><button className="icon-button danger" onClick={() => void removeExpense(expense)} title="Hapus pengeluaran"><Trash2 size={16} /></button></td></tr>)}</tbody></table></div></section></>}
+
+        {adminView === 'houses' && <><div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Perubahan status hunian akan memengaruhi tarif bulan berjalan.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div><section className="panel house-editor"><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Tunggakan awal</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="number" min="0" step="1000" value={house.openingArrears} onChange={(e) => patchHouse(house.id, { openingArrears: Number(e.target.value) })} /></td><td><button className="small-action" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section></>}
+
+        {adminView === 'settings' && <><div className="admin-heading"><div><span>Konfigurasi</span><h2>Pengaturan Kas</h2><p>Kelola rekening pembayaran, saldo awal, dan riwayat tarif.</p></div></div><div className="settings-grid"><section className="panel form-card"><div className="panel-title"><div><span>Informasi publik</span><h3>Rekening dan Saldo Awal</h3></div></div><form className="form-grid" onSubmit={saveSettings}><label>Nama bank<input value={settingsForm.bankName} onChange={(e) => setSettingsForm({ ...settingsForm, bankName: e.target.value })} /></label><label>Nomor rekening<input value={settingsForm.bankAccountNumber} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountNumber: e.target.value })} /></label><label>Nama pemilik rekening<input value={settingsForm.bankAccountHolder} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountHolder: e.target.value })} /></label><label>Saldo awal kas<input type="number" step="1000" value={settingsForm.openingCashBalance} onChange={(e) => setSettingsForm({ ...settingsForm, openingCashBalance: e.target.value })} /></label><label className="wide">Tarif gabungan CSJ02 + CSJ03<input type="number" min="0" step="1000" value={settingsForm.jointFee0203} onChange={(e) => setSettingsForm({ ...settingsForm, jointFee0203: e.target.value })} /></label><button className="primary-action wide" type="submit">Simpan pengaturan</button></form></section><section className="panel form-card"><div className="panel-title"><div><span>Tarif efektif</span><h3>Tambah Riwayat Tarif</h3></div></div><div className="current-tariff"><span>Tarif {monthLabel(activeMonth)}</span><strong>Dihuni {rupiah.format(activeTariff.occupiedFee)} · Kosong {rupiah.format(activeTariff.emptyFee)}</strong></div><form className="form-grid" onSubmit={saveTariff}><label>Berlaku mulai<input type="date" value={tariffForm.effectiveDate} onChange={(e) => setTariffForm({ ...tariffForm, effectiveDate: e.target.value })} /></label><label>Tarif dihuni<input type="number" min="0" step="1000" value={tariffForm.occupiedFee} onChange={(e) => setTariffForm({ ...tariffForm, occupiedFee: e.target.value })} /></label><label>Tarif rumah kosong<input type="number" min="0" step="1000" value={tariffForm.emptyFee} onChange={(e) => setTariffForm({ ...tariffForm, emptyFee: e.target.value })} /></label><label>Catatan<input placeholder="Contoh: keputusan rapat warga" value={tariffForm.notes} onChange={(e) => setTariffForm({ ...tariffForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Tambahkan tarif</button></form><div className="tariff-history">{[...data.tariffs].reverse().map((tariff) => <div key={tariff.id}><span>{tariff.effectiveDate}</span><strong>{rupiah.format(tariff.occupiedFee)} / {rupiah.format(tariff.emptyFee)}</strong></div>)}</div></section></div></>}
+      </div>
+    </section>}
+
+    <footer><span>Monitoring Iuran Warga CSJ</span><span>Data diperbarui langsung dari Supabase</span></footer>
+
+    {showLogin && <div className="modal-backdrop" role="presentation"><section className="login-dialog" role="dialog" aria-modal="true" aria-label="Login admin"><button className="modal-close" onClick={() => setShowLogin(false)} aria-label="Tutup"><X size={20} /></button><div className="login-icon"><ShieldCheck size={28} /></div><span className="section-kicker">Akses pengurus</span><h2>Login Admin</h2><p>Masuk untuk mencatat pembayaran, pengeluaran, dan memperbarui data warga.</p><form onSubmit={signIn}><label>Email<input type="email" autoComplete="email" required value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} /></label><label>Kata sandi<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} /></label><button className="primary-action" type="submit"><LogIn size={18} />Masuk</button></form></section></div>}
+  </main>
 }
 
 export default App

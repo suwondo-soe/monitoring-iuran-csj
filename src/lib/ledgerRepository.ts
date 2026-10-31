@@ -1,4 +1,5 @@
-import type { Expense, House, LedgerData, Payment, ResidenceStatus } from '../types'
+import type { Expense, House, LedgerData, Payment, ResidenceStatus, Tariff } from '../types'
+import { DEFAULT_JOINT_FEE } from '../domain'
 import { supabase } from './supabase'
 
 type HouseRow = {
@@ -33,89 +34,108 @@ type ExpenseRow = {
   description: string | null
 }
 
+type TariffRow = {
+  id: string
+  effective_date: string
+  occupied_fee: number | string
+  empty_fee: number | string
+  notes: string | null
+}
+
+type SettingRow = { key: string; value: unknown }
+
 const requireClient = () => {
-  if (!supabase) throw new Error('Supabase is not configured.')
+  if (!supabase) throw new Error('Supabase belum dikonfigurasi.')
   return supabase
+}
+
+const settingText = (settings: Map<string, unknown>, key: string, fallback: string) => {
+  const value = settings.get(key)
+  return typeof value === 'string' && value.trim() ? value : fallback
+}
+
+const settingNumber = (settings: Map<string, unknown>, key: string, fallback: number) => {
+  const value = Number(settings.get(key))
+  return Number.isFinite(value) ? value : fallback
 }
 
 export async function loadRemoteLedger(): Promise<LedgerData> {
   const client = requireClient()
   const { data: sessionData } = await client.auth.getSession()
   const publicPaymentFields = [
-    'id',
-    'house_id',
-    'period_month',
-    'payment_date',
-    'mandatory_amount',
-    'arrears_amount',
-    'extra_amount',
-    'extra_type',
+    'id', 'house_id', 'period_month', 'payment_date', 'mandatory_amount',
+    'arrears_amount', 'extra_amount', 'extra_type',
   ].join(',')
   const paymentFields = sessionData.session
     ? `${publicPaymentFields},payment_method,notes`
     : publicPaymentFields
-  const [housesResult, paymentsResult, expensesResult, settingsResult] =
+  const [housesResult, tariffsResult, paymentsResult, expensesResult, settingsResult] =
     await Promise.all([
       client.from('houses').select('*').order('id'),
-      client
-        .from('payments')
-        .select(paymentFields)
-        .order('payment_date', { ascending: false }),
+      client.from('tariff_history').select('*').order('effective_date'),
+      client.from('payments').select(paymentFields).order('payment_date', { ascending: false }),
       client.from('expenses').select('*').order('expense_date', { ascending: false }),
-      client.from('app_settings').select('value').eq('key', 'opening_cash_balance').maybeSingle(),
+      client.from('app_settings').select('key,value'),
     ])
 
-  const error =
-    housesResult.error ??
-    paymentsResult.error ??
-    expensesResult.error ??
-    settingsResult.error
+  const error = housesResult.error ?? tariffsResult.error ?? paymentsResult.error ??
+    expensesResult.error ?? settingsResult.error
   if (error) throw error
 
-  const houses = (housesResult.data as HouseRow[]).map(
-    (row): House => ({
-      id: row.id,
-      number: row.house_no,
-      owner: row.owner_name,
-      residenceStatus: row.residence_status,
-      tenant: row.tenant_name ?? '',
-      rentalStartDate: row.rental_start_date ?? '',
-      openingArrears: Number(row.opening_arrears),
-      monthlyFeeOverride:
-        row.monthly_fee_override === null ? null : Number(row.monthly_fee_override),
-    }),
-  )
+  const houses = (housesResult.data as HouseRow[]).map((row): House => ({
+    id: row.id,
+    number: row.house_no,
+    owner: row.owner_name,
+    residenceStatus: row.residence_status,
+    tenant: row.tenant_name ?? '',
+    rentalStartDate: row.rental_start_date ?? '',
+    openingArrears: Number(row.opening_arrears),
+    monthlyFeeOverride: row.monthly_fee_override === null ? null : Number(row.monthly_fee_override),
+  }))
 
-  const payments = (paymentsResult.data as unknown as PaymentRow[]).map(
-    (row): Payment => ({
-      id: row.id,
-      houseId: row.house_id,
-      month: row.period_month.slice(0, 7),
-      paymentDate: row.payment_date,
-      mandatoryAmount: Number(row.mandatory_amount),
-      arrearsAmount: Number(row.arrears_amount),
-      extraAmount: Number(row.extra_amount),
-      extraType: row.extra_type,
-      method: row.payment_method ?? '',
-      notes: row.notes ?? '',
-    }),
-  )
+  const tariffs = (tariffsResult.data as TariffRow[]).map((row): Tariff => ({
+    id: row.id,
+    effectiveDate: row.effective_date,
+    occupiedFee: Number(row.occupied_fee),
+    emptyFee: Number(row.empty_fee),
+    notes: row.notes ?? '',
+  }))
 
-  const expenses = (expensesResult.data as ExpenseRow[]).map(
-    (row): Expense => ({
-      id: row.id,
-      date: row.expense_date,
-      category: row.category,
-      amount: Number(row.amount),
-      description: row.description ?? '',
-    }),
+  const payments = (paymentsResult.data as unknown as PaymentRow[]).map((row): Payment => ({
+    id: row.id,
+    houseId: row.house_id,
+    month: row.period_month.slice(0, 7),
+    paymentDate: row.payment_date,
+    mandatoryAmount: Number(row.mandatory_amount),
+    arrearsAmount: Number(row.arrears_amount),
+    extraAmount: Number(row.extra_amount),
+    extraType: row.extra_type,
+    method: row.payment_method ?? '',
+    notes: row.notes ?? '',
+  }))
+
+  const expenses = (expensesResult.data as ExpenseRow[]).map((row): Expense => ({
+    id: row.id,
+    date: row.expense_date,
+    category: row.category,
+    amount: Number(row.amount),
+    description: row.description ?? '',
+  }))
+
+  const settings = new Map(
+    (settingsResult.data as SettingRow[]).map((row) => [row.key, row.value]),
   )
 
   return {
     houses,
+    tariffs,
     payments,
     expenses,
-    openingCashBalance: Number(settingsResult.data?.value ?? 0),
+    openingCashBalance: settingNumber(settings, 'opening_cash_balance', 0),
+    jointFee0203: settingNumber(settings, 'joint_fee_02_03', DEFAULT_JOINT_FEE),
+    bankName: settingText(settings, 'bank_name', 'Bank Neo Commerce'),
+    bankAccountNumber: settingText(settings, 'bank_account_number', '5859457243882555'),
+    bankAccountHolder: settingText(settings, 'bank_account_holder', 'Suwondo'),
   }
 }
 
@@ -135,6 +155,11 @@ export async function createRemotePayment(payment: Payment) {
   if (error) throw error
 }
 
+export async function deleteRemotePayment(id: string) {
+  const { error } = await requireClient().from('payments').delete().eq('id', id)
+  if (error) throw error
+}
+
 export async function createRemoteExpense(expense: Expense) {
   const { error } = await requireClient().from('expenses').insert({
     id: expense.id,
@@ -146,26 +171,37 @@ export async function createRemoteExpense(expense: Expense) {
   if (error) throw error
 }
 
-export async function updateRemoteHouse(house: House) {
-  const { error } = await requireClient()
-    .from('houses')
-    .update({
-      owner_name: house.owner,
-      residence_status: house.residenceStatus,
-      tenant_name: house.tenant || null,
-      rental_start_date: house.rentalStartDate || null,
-      opening_arrears: house.openingArrears,
-      monthly_fee_override: house.monthlyFeeOverride,
-    })
-    .eq('id', house.id)
+export async function deleteRemoteExpense(id: string) {
+  const { error } = await requireClient().from('expenses').delete().eq('id', id)
   if (error) throw error
 }
 
-export async function updateRemoteOpeningBalance(value: number) {
-  const { error } = await requireClient().from('app_settings').upsert({
-    key: 'opening_cash_balance',
-    value,
+export async function createRemoteTariff(tariff: Tariff) {
+  const { error } = await requireClient().from('tariff_history').insert({
+    id: tariff.id,
+    effective_date: tariff.effectiveDate,
+    occupied_fee: tariff.occupiedFee,
+    empty_fee: tariff.emptyFee,
+    notes: tariff.notes || null,
   })
+  if (error) throw error
+}
+
+export async function updateRemoteHouse(house: House) {
+  const { error } = await requireClient().from('houses').update({
+    owner_name: house.owner,
+    residence_status: house.residenceStatus,
+    tenant_name: house.tenant || null,
+    rental_start_date: house.rentalStartDate || null,
+    opening_arrears: house.openingArrears,
+    monthly_fee_override: house.monthlyFeeOverride,
+  }).eq('id', house.id)
+  if (error) throw error
+}
+
+export async function updateRemoteSettings(settings: Record<string, string | number>) {
+  const rows = Object.entries(settings).map(([key, value]) => ({ key, value }))
+  const { error } = await requireClient().from('app_settings').upsert(rows)
   if (error) throw error
 }
 
@@ -173,12 +209,8 @@ export async function currentUserIsAdmin() {
   const client = requireClient()
   const { data: sessionData } = await client.auth.getSession()
   if (!sessionData.session) return false
-
-  const { data, error } = await client
-    .from('profiles')
-    .select('role')
-    .eq('user_id', sessionData.session.user.id)
-    .maybeSingle()
+  const { data, error } = await client.from('profiles').select('role')
+    .eq('user_id', sessionData.session.user.id).maybeSingle()
   if (error) throw error
   return data?.role === 'admin'
 }

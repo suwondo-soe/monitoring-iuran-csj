@@ -1,18 +1,19 @@
 # Monitoring Iuran CSJ
 
-Dashboard kas lingkungan untuk 36 rumah CSJ. Warga dapat melihat status iuran,
-tunggakan, saldo, dan pengeluaran. Pengurus yang sudah login dapat mencatat
-pembayaran, pengeluaran, saldo awal, serta memperbarui data rumah.
+Sistem transparansi kas lingkungan untuk 36 rumah CSJ. Halaman warga bersifat
+publik dan hanya-baca, sedangkan ruang administrasi hanya dapat dibuka oleh
+pengurus yang masuk melalui Supabase Auth.
 
 ## Fitur
 
-- Ringkasan kas dan tunggakan per bulan
-- Status iuran 36 rumah
+- Saldo kas kumulatif serta pemasukan dan pengeluaran bulanan
+- Tunggakan otomatis sejak Januari 2026 berdasarkan riwayat tarif
+- Status iuran 35 akun pembayaran untuk 36 rumah
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
 - Pencatatan pengeluaran
-- Ekspor CSV
 - Tampilan publik hanya-baca
 - Login admin dengan Supabase Auth
+- Pengaturan rekening, saldo awal, dan tarif dari ruang admin
 - Penyimpanan PostgreSQL dengan Row Level Security
 - Mode lokal otomatis jika Supabase belum dikonfigurasi
 
@@ -20,8 +21,7 @@ Tarif awal Januari 2026:
 
 - Rumah dihuni: Rp185.000
 - Rumah kosong: Rp145.000
-- CSJ 2 dan CSJ 3: total khusus Rp315.000, dibagi Rp157.500 per rumah agar
-  status keduanya tetap dapat dipantau
+- CSJ 2 dan CSJ 3: satu akun pembayaran gabungan sebesar Rp315.000
 
 ## 1. Siapkan Database Supabase
 

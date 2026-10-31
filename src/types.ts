@@ -1,4 +1,5 @@
-export type Tab = 'summary' | 'collection' | 'expenses'
+export type PublicView = 'overview' | 'dues' | 'expenses'
+export type AdminView = 'payments' | 'expenses' | 'houses' | 'settings'
 export type ResidenceStatus = 'owner_occupied' | 'rented' | 'empty'
 
 export type House = {
@@ -10,6 +11,14 @@ export type House = {
   rentalStartDate: string
   openingArrears: number
   monthlyFeeOverride?: number | null
+}
+
+export type Tariff = {
+  id: string
+  effectiveDate: string
+  occupiedFee: number
+  emptyFee: number
+  notes: string
 }
 
 export type Payment = {
@@ -35,7 +44,31 @@ export type Expense = {
 
 export type LedgerData = {
   houses: House[]
+  tariffs: Tariff[]
   payments: Payment[]
   expenses: Expense[]
   openingCashBalance: number
+  jointFee0203: number
+  bankName: string
+  bankAccountNumber: string
+  bankAccountHolder: string
+}
+
+export type BillingAccount = {
+  id: string
+  houseIds: number[]
+  code: string
+  shortCode: string
+  residentName: string
+  residenceStatus: ResidenceStatus
+  openingArrears: number
+}
+
+export type AccountStatement = BillingAccount & {
+  monthlyDue: number
+  paidThisPeriod: number
+  currentBalance: number
+  arrearsBalance: number
+  totalOutstanding: number
+  isPaid: boolean
 }

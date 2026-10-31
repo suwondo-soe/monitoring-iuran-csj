@@ -254,13 +254,15 @@ on conflict (effective_date) do nothing;
 insert into public.app_settings (key, value)
 values
   ('opening_cash_balance', '0'::jsonb),
-  ('bank_name', '""'::jsonb),
-  ('bank_account_number', '""'::jsonb),
-  ('bank_account_holder', '""'::jsonb)
+  ('joint_fee_02_03', '315000'::jsonb),
+  ('bank_name', '"Bank Neo Commerce"'::jsonb),
+  ('bank_account_number', '"5859457243882555"'::jsonb),
+  ('bank_account_holder', '"Suwondo"'::jsonb)
 on conflict (key) do nothing;
 
--- CSJ 2 and CSJ 3 share the Rp315,000 special monthly charge.
--- It is split evenly so both houses retain an independent payment status.
+-- CSJ 2 and CSJ 3 share one Rp315,000 billing account. The legacy override is
+-- split between both house rows for compatibility; the app records and reports
+-- the pair as a single payer through the joint_fee_02_03 setting.
 insert into public.houses (
   id, house_no, owner_name, residence_status, tenant_name,
   rental_start_date, monthly_fee_override
