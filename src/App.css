@@ -129,7 +129,9 @@ p {
   gap: 8px;
   justify-content: center;
   min-height: 44px;
+  min-width: 0;
   padding: 0 13px;
+  white-space: normal;
 }
 
 .copy-account:hover {
@@ -269,6 +271,18 @@ select:disabled {
 .page-layer {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.page-layer > *,
+.public-overview,
+.public-overview > *,
+.summary-grid,
+.summary-grid > *,
+.summary-details,
+.panel,
+.table-wrap {
+  min-width: 0;
 }
 
 .summary-grid {
@@ -882,10 +896,14 @@ th {
   .payment-band {
     align-items: start;
     grid-template-columns: 48px minmax(0, 1fr);
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
   }
 
   .copy-account {
     grid-column: 1 / -1;
+    overflow-wrap: anywhere;
     width: 100%;
   }
 
