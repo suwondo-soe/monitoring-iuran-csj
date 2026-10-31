@@ -11,6 +11,7 @@ type HouseRow = {
   rental_start_date: string | null
   opening_arrears: number | string
   monthly_fee_override: number | string | null
+  billing_start_month?: string | null
 }
 
 type PaymentRow = {
@@ -91,6 +92,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     rentalStartDate: row.rental_start_date ?? '',
     openingArrears: Number(row.opening_arrears),
     monthlyFeeOverride: row.monthly_fee_override === null ? null : Number(row.monthly_fee_override),
+    billingStartMonth: row.billing_start_month?.slice(0, 7) ?? (row.id === 6 ? '2026-05' : row.id === 12 ? '2026-08' : '2026-01'),
   }))
 
   const tariffs = (tariffsResult.data as TariffRow[]).map((row): Tariff => ({
@@ -125,6 +127,14 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   const settings = new Map(
     (settingsResult.data as SettingRow[]).map((row) => [row.key, row.value]),
   )
+  const pendingSetting = settings.get('pending_payment_months')
+  const pendingPaymentMonths = Array.isArray(pendingSetting)
+    ? pendingSetting.filter((item): item is { houseId: number; month: string; notes: string } =>
+      typeof item === 'object' && item !== null &&
+      typeof (item as { houseId?: unknown }).houseId === 'number' &&
+      typeof (item as { month?: unknown }).month === 'string' &&
+      typeof (item as { notes?: unknown }).notes === 'string')
+    : [{ houseId: 4, month: '2026-04', notes: 'Penghuni menyatakan sudah membayar; menunggu bukti pembayaran.' }]
 
   return {
     houses,
@@ -136,6 +146,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     bankName: settingText(settings, 'bank_name', 'Bank Neo Commerce'),
     bankAccountNumber: settingText(settings, 'bank_account_number', '5859457243882555'),
     bankAccountHolder: settingText(settings, 'bank_account_holder', 'Suwondo'),
+    pendingPaymentMonths,
   }
 }
 
@@ -195,6 +206,7 @@ export async function updateRemoteHouse(house: House) {
     rental_start_date: house.rentalStartDate || null,
     opening_arrears: house.openingArrears,
     monthly_fee_override: house.monthlyFeeOverride,
+    billing_start_month: `${house.billingStartMonth}-01`,
   }).eq('id', house.id)
   if (error) throw error
 }

@@ -11,6 +11,13 @@ export type House = {
   rentalStartDate: string
   openingArrears: number
   monthlyFeeOverride?: number | null
+  billingStartMonth: string
+}
+
+export type PendingPaymentMonth = {
+  houseId: number
+  month: string
+  notes: string
 }
 
 export type Tariff = {
@@ -52,6 +59,7 @@ export type LedgerData = {
   bankName: string
   bankAccountNumber: string
   bankAccountHolder: string
+  pendingPaymentMonths: PendingPaymentMonth[]
 }
 
 export type BillingAccount = {

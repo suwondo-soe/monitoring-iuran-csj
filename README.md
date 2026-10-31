@@ -10,7 +10,7 @@ pengurus yang masuk melalui Supabase Auth.
 - Tunggakan otomatis sejak Januari 2026 berdasarkan riwayat tarif
 - Tagihan lama sampai 31 Desember 2025 yang dapat diisi manual per akun
 - Status iuran 35 akun pembayaran untuk 36 rumah
-- Rekap pembayaran 2026–2028 dengan status bulanan dan total kewajiban sampai tanggal akses
+- Rekap pembayaran 2026–2028 dengan status lunas, belum bayar, dibayar sebagian, menunggu konfirmasi, dan total kewajiban sampai tanggal akses
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
 - Pencatatan pengeluaran
 - Tampilan publik hanya-baca
@@ -24,6 +24,7 @@ Tarif awal Januari 2026:
 - Rumah dihuni: Rp185.000
 - Rumah kosong: Rp145.000
 - CSJ 2 dan CSJ 3: satu akun pembayaran gabungan sebesar Rp315.000
+- CSJ 6 mulai ditagih Mei 2026 dan CSJ 12 mulai ditagih Agustus 2026
 
 ## 1. Siapkan Database Supabase
 
@@ -35,6 +36,12 @@ Tarif awal Januari 2026:
 5. Pastikan tabel berikut terlihat di **Table Editor**:
    `profiles`, `houses`, `tariff_history`, `payments`, `expenses`, dan
    `app_settings`.
+
+Untuk mengimpor matriks pembayaran 2026 dan aturan tanggal mulai tagihan,
+jalankan juga
+[`supabase/migrations/202611010002_import_2026_payments.sql`](supabase/migrations/202611010002_import_2026_payments.sql).
+Migrasi ini aman dijalankan ulang karena data impor menggunakan kunci unik yang
+tetap.
 
 Script tersebut juga mengisi 36 rumah dan mengaktifkan kebijakan keamanan. Jika
 menemukan tabel dari script Copilot sebelumnya, tabel lama dipindahkan ke schema

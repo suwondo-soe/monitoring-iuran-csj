@@ -92,6 +92,7 @@ export function monthlyFeeForAccount(
   if (account.houseIds.length === 2) return jointFee
   const house = houses.find((item) => item.id === account.houseIds[0])
   if (!house) return 0
+  if (month < house.billingStartMonth) return 0
   if (house.monthlyFeeOverride != null) return house.monthlyFeeOverride
   const tariff = tariffForMonth(tariffs, month)
   return house.residenceStatus === 'empty' ? tariff.emptyFee : tariff.occupiedFee
