@@ -12,6 +12,7 @@ pengurus yang masuk melalui Supabase Auth.
 - Status iuran 35 akun pembayaran untuk 36 rumah
 - Rekap pembayaran 2026–2028 dengan status lunas, belum bayar, dibayar sebagian, menunggu konfirmasi, dan total kewajiban sampai tanggal akses
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
+- Tanggal transaksi terpisah dari periode iuran, termasuk pembayaran beberapa bulan sekaligus pada tanggal yang sama
 - Pencatatan pengeluaran
 - Tampilan publik hanya-baca
 - Login admin dengan Supabase Auth

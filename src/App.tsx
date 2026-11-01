@@ -11,7 +11,7 @@ import {
   DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, statementForAccount, tariffForMonth,
 } from './domain'
 import {
-  createRemoteExpense, createRemotePayment, createRemoteTariff, currentUserIsAdmin,
+  createRemoteExpense, createRemotePayments, createRemoteTariff, currentUserIsAdmin,
   deleteRemoteExpense, deleteRemotePayment, loadRemoteLedger, updateRemoteHouse,
   updateRemoteSettings,
 } from './lib/ledgerRepository'
@@ -26,6 +26,12 @@ const now = new Date()
 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 const currentMonth = today.slice(0, 7)
 const pageOpenedLabel = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }).format(now)
+
+const nextMonthValue = (month: string) => {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const next = new Date(year, monthNumber, 1)
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
+}
 
 const people = [
   'Dwi Nanung/Ayu', 'Anky/Glady', 'Anky/Glady', 'Qomar/Intan Widya', 'Muh. Basyir/Ova',
@@ -101,7 +107,11 @@ function App() {
   const [recapYear, setRecapYear] = useState(Math.min(2028, Math.max(2026, now.getFullYear())))
   const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
-  const [paymentForm, setPaymentForm] = useState({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
+  const [paymentForm, setPaymentForm] = useState({
+    paymentDate: today,
+    periods: [{ month: activeMonth, mandatory: '0' }],
+    arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '',
+  })
   const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Security', amount: '', description: '' })
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
@@ -169,10 +179,42 @@ function App() {
     [data, selected],
   )
 
+  const outstandingForPeriod = (account: BillingAccount, month: string) => {
+    const due = monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
+    const paid = data.payments
+      .filter((payment) => account.houseIds.includes(payment.houseId) && payment.month === month)
+      .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
+    return Math.max(due - paid, 0)
+  }
+
+  const updatePaymentPeriod = (index: number, month: string) => {
+    const mandatory = String(outstandingForPeriod(selected, month))
+    setPaymentForm((form) => ({
+      ...form,
+      periods: form.periods.map((period, periodIndex) => periodIndex === index ? { month, mandatory } : period),
+    }))
+  }
+
+  const addPaymentPeriod = () => {
+    const month = nextMonthValue(paymentForm.periods.at(-1)?.month ?? activeMonth)
+    setPaymentForm((form) => ({
+      ...form,
+      periods: [...form.periods, { month, mandatory: String(outstandingForPeriod(selected, month)) }],
+    }))
+  }
+
+  const removePaymentPeriod = (index: number) => {
+    setPaymentForm((form) => ({ ...form, periods: form.periods.filter((_, periodIndex) => periodIndex !== index) }))
+  }
+
   const selectAccount = (account: BillingAccount) => {
     const statement = statements.find((item) => item.id === account.id) ?? selected
     setSelectedAccountId(account.id)
-    setPaymentForm((form) => ({ ...form, mandatory: String(statement.currentBalance), arrears: String(statement.arrearsBalance) }))
+    setPaymentForm((form) => ({
+      ...form,
+      periods: [{ month: activeMonth, mandatory: String(statement.currentBalance) }],
+      arrears: String(statement.arrearsBalance),
+    }))
   }
 
   const openPublicRecap = (account: BillingAccount) => {
@@ -205,18 +247,28 @@ function App() {
 
   const savePayment = async (event: FormEvent) => {
     event.preventDefault(); setError('')
-    const payment: Payment = {
-      id: crypto.randomUUID(), houseId: selected.houseIds[0], month: activeMonth, paymentDate: today,
-      mandatoryAmount: Number(paymentForm.mandatory), arrearsAmount: Number(paymentForm.arrears),
-      extraAmount: Number(paymentForm.extra), extraType: paymentForm.extraType,
-      method: paymentForm.method, notes: paymentForm.notes,
-    }
-    if (payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount <= 0) { setError('Jumlah pembayaran harus lebih dari nol.'); return }
+    const periodMonths = paymentForm.periods.map((period) => period.month)
+    if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
+    if (!paymentForm.paymentDate) { setError('Tanggal pembayaran wajib dipilih.'); return }
+    const arrearsAmount = Number(paymentForm.arrears)
+    const extraAmount = Number(paymentForm.extra)
+    const paidPeriods = paymentForm.periods
+      .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
+      .filter((period) => period.mandatoryAmount > 0)
+    const recordedPeriods = paidPeriods.length ? paidPeriods : [{ month: paymentForm.periods[0].month, mandatoryAmount: 0 }]
+    if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) + arrearsAmount + extraAmount <= 0) { setError('Jumlah pembayaran harus lebih dari nol.'); return }
+    const payments: Payment[] = recordedPeriods.map((period, index) => ({
+      id: crypto.randomUUID(), houseId: selected.houseIds[0], month: period.month,
+      paymentDate: paymentForm.paymentDate, mandatoryAmount: period.mandatoryAmount,
+      arrearsAmount: index === 0 ? arrearsAmount : 0,
+      extraAmount: index === 0 ? extraAmount : 0,
+      extraType: paymentForm.extraType, method: paymentForm.method, notes: paymentForm.notes,
+    }))
     try {
-      if (supabaseConfigured) await createRemotePayment(payment)
-      setData((current) => ({ ...current, payments: [payment, ...current.payments] }))
-      setPaymentForm({ mandatory: '0', arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
-      flash(`Pembayaran ${selected.code} berhasil dicatat.`)
+      if (supabaseConfigured) await createRemotePayments(payments)
+      setData((current) => ({ ...current, payments: [...payments, ...current.payments] }))
+      setPaymentForm({ paymentDate: today, periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
+      flash(`Pembayaran ${selected.code} untuk ${payments.length} periode berhasil dicatat.`)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran gagal disimpan.') }
   }
 
@@ -300,6 +352,7 @@ function App() {
   }
 
   const selectedPayments = data.payments.filter((payment) => selected?.houseIds.includes(payment.houseId)).sort((a, b) => b.paymentDate.localeCompare(a.paymentDate))
+  const paymentPeriodTotal = paymentForm.periods.reduce((sum, period) => sum + Number(period.mandatory || 0), 0)
 
   if (loading) return <main className="loading-screen"><div className="brand-mark">CSJ</div><p>Menyiapkan laporan kas warga…</p></main>
 
@@ -376,7 +429,24 @@ function App() {
           <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayaran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
           <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
             <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
-            <form className="form-grid" onSubmit={savePayment}><label>Iuran bulan ini<input type="number" min="0" step="1000" value={paymentForm.mandatory} onChange={(e) => setPaymentForm({ ...paymentForm, mandatory: e.target.value })} /></label><label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label><label>Tambahan<input type="number" min="0" step="1000" value={paymentForm.extra} onChange={(e) => setPaymentForm({ ...paymentForm, extra: e.target.value })} /></label><label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Lainnya</option></select></label><label>Metode<select value={paymentForm.method} onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label><label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran</button></form>
+            <form className="form-grid" onSubmit={savePayment}>
+              <label>Tanggal bayar<input type="date" required value={paymentForm.paymentDate} onChange={(e) => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} /></label>
+              <label>Metode<select value={paymentForm.method} onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
+              <div className="payment-periods wide">
+                <div className="payment-period-heading"><div><strong>Periode pembayaran</strong><span>Pilih bulan dan tahun. Tambahkan baris jika satu transaksi membayar beberapa bulan.</span></div><button className="secondary-action" type="button" onClick={addPaymentPeriod}><Plus size={16} />Tambah periode</button></div>
+                {paymentForm.periods.map((period, index) => <div className="payment-period-row" key={`${index}-${period.month}`}>
+                  <label>Bulan & tahun<input type="month" min="2026-01" max="2028-12" required value={period.month} onChange={(e) => updatePaymentPeriod(index, e.target.value)} /></label>
+                  <label>Iuran periode<input type="number" min="0" step="1000" value={period.mandatory} onChange={(e) => setPaymentForm((form) => ({ ...form, periods: form.periods.map((item, periodIndex) => periodIndex === index ? { ...item, mandatory: e.target.value } : item) }))} /></label>
+                  <button aria-label={`Hapus periode ${monthLabel(period.month)}`} className="icon-button danger" disabled={paymentForm.periods.length === 1} onClick={() => removePaymentPeriod(index)} title="Hapus periode" type="button"><Trash2 size={16} /></button>
+                </div>)}
+                <div className="payment-period-total"><span>Total iuran periode terpilih</span><strong>{rupiah.format(paymentPeriodTotal)}</strong></div>
+              </div>
+              <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label>
+              <label>Tambahan<input type="number" min="0" step="1000" value={paymentForm.extra} onChange={(e) => setPaymentForm({ ...paymentForm, extra: e.target.value })} /></label>
+              <label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Lainnya</option></select></label>
+              <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label>
+              <button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
+            </form>
           </section></div>
           <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Iuran</th><th>Tunggakan</th><th>Tambahan</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{rupiah.format(payment.mandatoryAmount)}</td><td>{rupiah.format(payment.arrearsAmount)}</td><td>{rupiah.format(payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus pembayaran"><Trash2 size={16} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada pembayaran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
         </>}

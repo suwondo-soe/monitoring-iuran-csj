@@ -150,8 +150,8 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   }
 }
 
-export async function createRemotePayment(payment: Payment) {
-  const { error } = await requireClient().from('payments').insert({
+export async function createRemotePayments(payments: Payment[]) {
+  const rows = payments.map((payment) => ({
     id: payment.id,
     house_id: payment.houseId,
     period_month: `${payment.month}-01`,
@@ -162,7 +162,8 @@ export async function createRemotePayment(payment: Payment) {
     extra_type: payment.extraType,
     payment_method: payment.method,
     notes: payment.notes || null,
-  })
+  }))
+  const { error } = await requireClient().from('payments').insert(rows)
   if (error) throw error
 }
 
