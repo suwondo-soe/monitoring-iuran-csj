@@ -14,6 +14,31 @@ export type House = {
   billingStartMonth: string
 }
 
+export type OccupantRole = 'owner' | 'tenant'
+
+export type HouseOccupancy = {
+  id: string
+  houseId: number
+  occupantName: string
+  occupantRole: OccupantRole
+  startDate: string
+  endDate: string
+  notes: string
+}
+
+export type ArrearsDebtorRole = 'owner' | 'tenant' | 'former_tenant' | 'unassigned'
+
+export type OpeningArrearsItem = {
+  id: string
+  houseId: number | null
+  occupancyId: string | null
+  debtorName: string
+  debtorRole: ArrearsDebtorRole
+  cutoffDate: string
+  originalAmount: number
+  notes: string
+}
+
 export type PendingPaymentMonth = {
   houseId: number
   month: string
@@ -39,6 +64,7 @@ export type Payment = {
   extraType: string
   method: string
   notes: string
+  openingArrearsItemId?: string | null
 }
 
 export type Expense = {
@@ -61,6 +87,8 @@ export type ReceivableTransaction = {
 
 export type LedgerData = {
   houses: House[]
+  houseOccupancies: HouseOccupancy[]
+  openingArrearsItems: OpeningArrearsItem[]
   tariffs: Tariff[]
   payments: Payment[]
   expenses: Expense[]

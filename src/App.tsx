@@ -12,15 +12,17 @@ import {
   statementForAccount, tariffForMonth,
 } from './domain'
 import {
-  createRemoteExpense, createRemotePayments, createRemoteReceivableTransaction,
-  createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense, deleteRemotePayment,
+  createRemoteExpense, createRemoteOccupancy, createRemoteOpeningArrearsItem, createRemotePayments,
+  createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
+  deleteRemoteOccupancy, deleteRemoteOpeningArrearsItem, deleteRemotePayment,
   deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
-  updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
+  setRemoteOpeningArrearsTotal, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
-  AdminView, BillingAccount, Expense, House, LedgerData, Payment, PendingPaymentMonth, PublicView,
-  ReceivableTransaction, ResidenceStatus, Tariff,
+  AdminView, ArrearsDebtorRole, BillingAccount, Expense, House, HouseOccupancy, LedgerData,
+  OpeningArrearsItem, Payment, PendingPaymentMonth, PublicView, ReceivableTransaction,
+  ResidenceStatus, Tariff,
 } from './types'
 
 const rupiah = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 })
@@ -61,7 +63,7 @@ const seedHouses: House[] = people.map((owner, index) => {
 })
 
 const seedLedger: LedgerData = {
-  houses: seedHouses,
+  houses: seedHouses, houseOccupancies: [], openingArrearsItems: [],
   tariffs: [{ id: 'initial', effectiveDate: '2026-01-01', occupiedFee: DEFAULT_OCCUPIED_FEE, emptyFee: DEFAULT_EMPTY_FEE, notes: 'Tarif awal CSJ' }],
   payments: [], expenses: [], receivableTransactions: [], openingCashBalance: 0, jointFee0203: DEFAULT_JOINT_FEE,
   bankName: 'Bank Neo Commerce', bankAccountNumber: '5859457243882555', bankAccountHolder: 'Suwondo',
@@ -70,6 +72,10 @@ const seedLedger: LedgerData = {
 
 const residenceLabel: Record<ResidenceStatus, string> = {
   owner_occupied: 'Dihuni pemilik', rented: 'Disewa', empty: 'Kosong',
+}
+const occupantRoleLabel = { owner: 'Pemilik', tenant: 'Penyewa' } as const
+const arrearsDebtorRoleLabel: Record<ArrearsDebtorRole, string> = {
+  owner: 'Pemilik', tenant: 'Penyewa', former_tenant: 'Mantan penyewa', unassigned: 'Belum dialokasikan',
 }
 const expenseDetailsByCategory: Record<string, string[]> = {
   Beban: [
@@ -194,7 +200,7 @@ function App() {
     receiptKind: 'dues',
     paymentDate: today,
     periods: [{ month: activeMonth, mandatory: '0' }],
-    arrears: '0', otherPeriod: activeMonth, otherAmount: '',
+    arrears: '0', openingArrearsItemId: '', otherPeriod: activeMonth, otherAmount: '',
     extraType: 'Denda', method: 'Transfer', notes: '',
   })
   const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Beban', detail: 'Beban Security', amount: '', description: '' })
@@ -202,6 +208,15 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
+  const [openingArrearsDrafts, setOpeningArrearsDrafts] = useState<Record<string, string>>({})
+  const [arrearsForm, setArrearsForm] = useState({
+    houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
+    cutoffDate: '2025-12-31', originalAmount: '', notes: '',
+  })
+  const [occupancyForm, setOccupancyForm] = useState({
+    houseId: '1', occupantName: '', occupantRole: 'tenant' as 'owner' | 'tenant',
+    startDate: '2025-01-01', endDate: '2025-12-31', notes: '',
+  })
   const [journalQuery, setJournalQuery] = useState('')
   const [journalEdit, setJournalEdit] = useState<JournalEditForm | null>(null)
 
@@ -211,6 +226,8 @@ function App() {
       const loadedLedger = supabaseConfigured ? await loadRemoteLedger() : JSON.parse(localStorage.getItem('csj-ledger-v2') || 'null') ?? seedLedger
       const ledger: LedgerData = {
         ...loadedLedger,
+        houseOccupancies: loadedLedger.houseOccupancies ?? [],
+        openingArrearsItems: loadedLedger.openingArrearsItems ?? [],
         receivableTransactions: loadedLedger.receivableTransactions ?? [],
         pendingPaymentMonths: (loadedLedger.pendingPaymentMonths ?? []).filter((item: PendingPaymentMonth) =>
           !(item.houseId === 4 && item.month === '2026-04'),
@@ -242,6 +259,16 @@ function App() {
   const accounts = useMemo(() => buildBillingAccounts(data.houses), [data.houses])
   const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
   const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
+  const openingArrearsBalances = useMemo(() => data.openingArrearsItems.map((item) => {
+    const settled = data.payments
+      .filter((payment) => payment.openingArrearsItemId === item.id)
+      .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+    return { ...item, settled, outstanding: Math.max(item.originalAmount - settled, 0) }
+  }), [data.openingArrearsItems, data.payments])
+  const selectedOpeningArrearsItems = openingArrearsBalances.filter((item) =>
+    item.houseId !== null && selected.houseIds.includes(item.houseId) && item.outstanding > 0,
+  )
+  const totalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.outstanding, 0)
   const otherFunds = useMemo(() => {
     const categoryBalances = new Map(otherFundCategories.map((category) => [category, 0]))
     const accountBalances = new Map<string, Map<string, number>>()
@@ -482,6 +509,7 @@ function App() {
       ...form,
       periods: [{ month: activeMonth, mandatory: String(statement.currentBalance) }],
       arrears: String(statement.arrearsBalance),
+      openingArrearsItemId: '',
     }))
   }
 
@@ -536,13 +564,20 @@ function App() {
         id: crypto.randomUUID(), houseId: selected.houseIds[0], month: paymentForm.otherPeriod,
         paymentDate: paymentForm.paymentDate, mandatoryAmount: 0, arrearsAmount: 0,
         extraAmount, extraType: paymentForm.extraType,
-        method: paymentForm.method, notes: paymentForm.notes,
+        method: paymentForm.method, notes: paymentForm.notes, openingArrearsItemId: null,
       }]
       successMessage = `Penerimaan lain-lain ${selected.code} berhasil dicatat.`
     } else {
       const periodMonths = paymentForm.periods.map((period) => period.month)
       if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
       const arrearsAmount = Number(paymentForm.arrears)
+      const selectedArrearsItem = selectedOpeningArrearsItems.find((item) => item.id === paymentForm.openingArrearsItemId)
+      if (arrearsAmount > 0 && selectedOpeningArrearsItems.length > 0 && !selectedArrearsItem) {
+        setError('Pilih pihak yang tunggakannya sedang dilunasi.'); return
+      }
+      if (selectedArrearsItem && arrearsAmount > selectedArrearsItem.outstanding) {
+        setError(`Pelunasan melebihi sisa tunggakan ${selectedArrearsItem.debtorName} sebesar ${rupiah.format(selectedArrearsItem.outstanding)}.`); return
+      }
       const paidPeriods = paymentForm.periods
         .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
         .filter((period) => period.mandatoryAmount > 0)
@@ -553,6 +588,7 @@ function App() {
         paymentDate: paymentForm.paymentDate, mandatoryAmount: period.mandatoryAmount,
         arrearsAmount: index === 0 ? arrearsAmount : 0,
         extraAmount: 0, extraType: 'Tidak ada', method: paymentForm.method, notes: paymentForm.notes,
+        openingArrearsItemId: index === 0 && arrearsAmount > 0 ? paymentForm.openingArrearsItemId || null : null,
       }))
       successMessage = `Penerimaan iuran ${selected.code} untuk ${payments.length} periode berhasil dicatat.`
     }
@@ -561,7 +597,7 @@ function App() {
       setData((current) => ({ ...current, payments: [...payments, ...current.payments] }))
       setPaymentForm((form) => ({
         receiptKind: form.receiptKind, paymentDate: today,
-        periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0',
+        periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0', openingArrearsItemId: '',
         otherPeriod: activeMonth, otherAmount: '', extraType: 'Denda', method: 'Transfer', notes: '',
       }))
       flash(successMessage)
@@ -724,27 +760,88 @@ function App() {
 
   const patchHouse = (id: number, patch: Partial<House>) => setData((current) => ({ ...current, houses: current.houses.map((house) => house.id === id ? { ...house, ...patch } : house) }))
   const persistHouse = async (house: House) => {
-    try { if (supabaseConfigured) await updateRemoteHouse(house); flash(`${house.number} diperbarui.`) }
+    try {
+      if (supabaseConfigured) { await updateRemoteHouse(house, today); await loadData() }
+      flash(`${house.number} diperbarui. Riwayat penghuni telah disesuaikan.`)
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
-  }
-
-  const setOpeningArrears = (account: BillingAccount, value: number) => {
-    setData((current) => ({
-      ...current,
-      houses: current.houses.map((house) => account.houseIds.includes(house.id)
-        ? { ...house, openingArrears: house.id === account.houseIds[0] ? value : 0 }
-        : house),
-    }))
   }
 
   const saveOpeningArrears = async (account: BillingAccount) => {
     try {
-      const affectedHouses = data.houses.filter((house) => account.houseIds.includes(house.id))
-      if (supabaseConfigured) await Promise.all(affectedHouses.map(updateRemoteHouse))
+      const draft = openingArrearsDrafts[account.id]
+      const value = draft === undefined || draft === '' ? 0 : Number(draft)
+      if (!Number.isFinite(value) || value < 0) throw new Error('Nilai tunggakan awal tidak valid.')
+      if (supabaseConfigured) {
+        await setRemoteOpeningArrearsTotal(account.houseIds, value)
+        await loadData()
+      } else {
+        setData((current) => ({
+          ...current,
+          houses: current.houses.map((house) => account.houseIds.includes(house.id)
+            ? { ...house, openingArrears: house.id === account.houseIds[0] ? value : 0 }
+            : house),
+        }))
+      }
+      setOpeningArrearsDrafts((current) => { const next = { ...current }; delete next[account.id]; return next })
       flash(`Tagihan lama ${account.code} berhasil disimpan.`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tagihan lama gagal disimpan.')
     }
+  }
+
+  const saveOpeningArrearsItem = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const amount = Number(arrearsForm.originalAmount)
+    if (!arrearsForm.debtorName.trim()) { setError('Nama pihak yang berutang wajib diisi.'); return }
+    if (amount <= 0) { setError('Nilai tunggakan harus lebih dari nol.'); return }
+    const item: OpeningArrearsItem = {
+      id: crypto.randomUUID(), houseId: arrearsForm.houseId ? Number(arrearsForm.houseId) : null,
+      occupancyId: null, debtorName: arrearsForm.debtorName.trim(), debtorRole: arrearsForm.debtorRole,
+      cutoffDate: arrearsForm.cutoffDate, originalAmount: amount, notes: arrearsForm.notes.trim(),
+    }
+    try {
+      if (supabaseConfigured) { await createRemoteOpeningArrearsItem(item); await loadData() }
+      else setData((current) => ({ ...current, openingArrearsItems: [item, ...current.openingArrearsItems] }))
+      setArrearsForm({ houseId: '', debtorName: '', debtorRole: 'former_tenant', cutoffDate: '2025-12-31', originalAmount: '', notes: '' })
+      flash(`Tunggakan ${item.debtorName} berhasil dicatat.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Rincian tunggakan gagal disimpan.') }
+  }
+
+  const removeOpeningArrearsItem = async (item: OpeningArrearsItem) => {
+    if (!window.confirm(`Hapus rincian tunggakan ${item.debtorName}?`)) return
+    try {
+      if (supabaseConfigured) { await deleteRemoteOpeningArrearsItem(item.id); await loadData() }
+      else setData((current) => ({ ...current, openingArrearsItems: current.openingArrearsItems.filter((row) => row.id !== item.id) }))
+      flash('Rincian tunggakan dihapus.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Rincian tunggakan gagal dihapus.') }
+  }
+
+  const saveOccupancy = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    if (!occupancyForm.occupantName.trim()) { setError('Nama penghuni wajib diisi.'); return }
+    if (occupancyForm.endDate < occupancyForm.startDate) { setError('Tanggal selesai tidak boleh mendahului tanggal mulai.'); return }
+    const occupancy: HouseOccupancy = {
+      id: crypto.randomUUID(), houseId: Number(occupancyForm.houseId), occupantName: occupancyForm.occupantName.trim(),
+      occupantRole: occupancyForm.occupantRole, startDate: occupancyForm.startDate,
+      endDate: occupancyForm.endDate, notes: occupancyForm.notes.trim(),
+    }
+    try {
+      if (supabaseConfigured) { await createRemoteOccupancy(occupancy); await loadData() }
+      else setData((current) => ({ ...current, houseOccupancies: [occupancy, ...current.houseOccupancies] }))
+      setOccupancyForm((form) => ({ ...form, occupantName: '', notes: '' }))
+      flash(`Riwayat ${occupancy.occupantName} berhasil dicatat.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Riwayat penghuni gagal disimpan.') }
+  }
+
+  const removeOccupancy = async (occupancy: HouseOccupancy) => {
+    if (!occupancy.endDate) { setError('Penghuni aktif tidak dapat dihapus dari riwayat. Ubah data rumah untuk menggantinya.'); return }
+    if (!window.confirm(`Hapus riwayat penghuni ${occupancy.occupantName}?`)) return
+    try {
+      if (supabaseConfigured) await deleteRemoteOccupancy(occupancy.id)
+      setData((current) => ({ ...current, houseOccupancies: current.houseOccupancies.filter((row) => row.id !== occupancy.id) }))
+      flash('Riwayat penghuni dihapus.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Riwayat penghuni gagal dihapus.') }
   }
 
   const saveSettings = async (event: FormEvent) => {
@@ -890,11 +987,12 @@ function App() {
                 <div className="payment-period-total"><span>Total iuran periode terpilih</span><strong>{rupiah.format(paymentPeriodTotal)}</strong></div>
               </div>
               <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(event) => setPaymentForm({ ...paymentForm, arrears: event.target.value })} /></label>
+              {Number(paymentForm.arrears) > 0 && <label>Pihak yang melunasi<select value={paymentForm.openingArrearsItemId} onChange={(event) => setPaymentForm({ ...paymentForm, openingArrearsItemId: event.target.value })}><option value="">{selectedOpeningArrearsItems.length ? 'Pilih debitur tunggakan' : 'Belum ada rincian debitur'}</option>{selectedOpeningArrearsItems.map((item) => <option key={item.id} value={item.id}>{item.debtorName} · {arrearsDebtorRoleLabel[item.debtorRole]} · sisa {rupiah.format(item.outstanding)}</option>)}</select></label>}
               <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })} /></label>
               <button className="primary-action wide" type="submit"><Plus size={18} />Simpan penerimaan iuran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
             </form>
           </section></div>
-          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat penerimaan iuran wajib</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Detail</th><th>Nilai</th><th>Metode</th><th /></tr></thead><tbody>{selectedDuesPayments.length ? selectedDuesPayments.map((payment) => { const duesAmount = payment.mandatoryAmount + payment.arrearsAmount; return <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{payment.arrearsAmount > 0 ? 'Iuran + tunggakan' : 'Iuran bulanan'}</td><td>{rupiah.format(duesAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus penerimaan"><Trash2 size={16} /></button></td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Belum ada penerimaan iuran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat penerimaan iuran wajib</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Detail</th><th>Nilai</th><th>Metode</th><th /></tr></thead><tbody>{selectedDuesPayments.length ? selectedDuesPayments.map((payment) => { const duesAmount = payment.mandatoryAmount + payment.arrearsAmount; const arrearsDebtor = openingArrearsBalances.find((item) => item.id === payment.openingArrearsItemId); return <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{payment.arrearsAmount > 0 ? `Iuran + tunggakan${arrearsDebtor ? ` · ${arrearsDebtor.debtorName}` : ''}` : 'Iuran bulanan'}</td><td>{rupiah.format(duesAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus penerimaan"><Trash2 size={16} /></button></td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Belum ada penerimaan iuran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
         </>}
 
         {adminView === 'other-funds' && <>
@@ -957,10 +1055,36 @@ function App() {
         {adminView === 'houses' && <>
           <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola penghuni serta tagihan yang masih terutang sampai 31 Desember 2025.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
           <section className="panel opening-arrears-panel">
-            <div className="panel-title"><div><span>Saldo awal piutang</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Nilai awal seluruh akun adalah Rp0. Masukkan nominal lama secara manual jika ada.</p></div></div>
-            <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" value={account.openingArrears} onChange={(e) => setOpeningArrears(account, Number(e.target.value || 0))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
+            <div className="panel-title"><div><span>Kontrol saldo per akun</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Kosongkan kolom untuk menyimpan Rp0. Rincian nama pihak yang berutang dikelola pada bagian berikutnya.</p></div></div>
+            <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" placeholder="0" value={openingArrearsDrafts[account.id] ?? (account.openingArrears === 0 ? '' : String(account.openingArrears))} onChange={(event) => setOpeningArrearsDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
           </section>
-          <section className="panel house-editor"><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai tagihan</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><button className="small-action" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
+          <section className="panel arrears-detail-panel">
+            <div className="panel-title"><div><span>Siapa yang bertanggung jawab</span><h3>Rincian Debitur Tunggakan Awal</h3><p>Nama debitur tetap tersimpan meskipun penyewa sudah pindah atau rumah berganti penghuni.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
+            <form className="form-grid trace-form" onSubmit={saveOpeningArrearsItem}>
+              <label>Nama pihak yang berutang<input required placeholder="Nama pemilik atau mantan penyewa" value={arrearsForm.debtorName} onChange={(event) => setArrearsForm({ ...arrearsForm, debtorName: event.target.value })} /></label>
+              <label>Status pihak<select value={arrearsForm.debtorRole} onChange={(event) => setArrearsForm({ ...arrearsForm, debtorRole: event.target.value as ArrearsDebtorRole })}>{Object.entries(arrearsDebtorRoleLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Rumah terkait<select value={arrearsForm.houseId} onChange={(event) => setArrearsForm({ ...arrearsForm, houseId: event.target.value })}><option value="">Belum diketahui / tidak terkait</option>{data.houses.map((house) => <option key={house.id} value={house.id}>{house.number}</option>)}</select></label>
+              <label>Tanggal posisi<input type="date" required value={arrearsForm.cutoffDate} onChange={(event) => setArrearsForm({ ...arrearsForm, cutoffDate: event.target.value })} /></label>
+              <label>Nilai tunggakan<input type="number" min="0" step="1000" required value={arrearsForm.originalAmount} onChange={(event) => setArrearsForm({ ...arrearsForm, originalAmount: event.target.value })} /></label>
+              <label>Catatan<input placeholder="Contoh: rumah saat ini disewakan" value={arrearsForm.notes} onChange={(event) => setArrearsForm({ ...arrearsForm, notes: event.target.value })} /></label>
+              <button className="primary-action wide" type="submit"><Plus size={18} />Tambah rincian tunggakan</button>
+            </form>
+            <div className="table-wrap"><table className="trace-table"><thead><tr><th>Rumah</th><th>Debitur</th><th>Status</th><th>Posisi</th><th>Nilai awal</th><th>Terbayar</th><th>Sisa</th><th>Catatan</th><th /></tr></thead><tbody>{openingArrearsBalances.length ? openingArrearsBalances.map((item) => <tr key={item.id}><td>{item.houseId ? data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}` : <span className="unlinked-label">Belum diketahui</span>}</td><td><strong>{item.debtorName}</strong></td><td>{arrearsDebtorRoleLabel[item.debtorRole]}</td><td>{item.cutoffDate}</td><td>{rupiah.format(item.originalAmount)}</td><td>{rupiah.format(item.settled)}</td><td><strong>{rupiah.format(item.outstanding)}</strong></td><td>{item.notes || '—'}</td><td><button className="icon-button danger" onClick={() => void removeOpeningArrearsItem(item)} title="Hapus rincian tunggakan" type="button"><Trash2 size={15} /></button></td></tr>) : <tr><td colSpan={9}><div className="empty-state">Belum ada rincian debitur tunggakan awal.</div></td></tr>}</tbody></table></div>
+          </section>
+          <section className="panel house-editor"><div className="panel-title"><div><span>Data penghuni saat ini</span><h3>Rumah dan Penghuni Aktif</h3><p>Ketika nama atau status penghuni berubah, riwayat aktif sebelumnya ditutup otomatis pada tanggal penyimpanan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai sewa</th><th>Mulai tagihan</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="date" disabled={house.residenceStatus !== 'rented'} value={house.rentalStartDate} onChange={(e) => patchHouse(house.id, { rentalStartDate: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><button className="small-action" type="button" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
+          <section className="panel occupancy-history-panel">
+            <div className="panel-title"><div><span>Jejak perubahan</span><h3>Riwayat Penghuni</h3><p>Gunakan formulir ini untuk memasukkan periode lama. Penghuni aktif dikelola melalui tabel rumah di atas.</p></div></div>
+            <form className="form-grid trace-form" onSubmit={saveOccupancy}>
+              <label>Rumah<select value={occupancyForm.houseId} onChange={(event) => setOccupancyForm({ ...occupancyForm, houseId: event.target.value })}>{data.houses.map((house) => <option key={house.id} value={house.id}>{house.number}</option>)}</select></label>
+              <label>Nama penghuni<input required value={occupancyForm.occupantName} onChange={(event) => setOccupancyForm({ ...occupancyForm, occupantName: event.target.value })} /></label>
+              <label>Peran<select value={occupancyForm.occupantRole} onChange={(event) => setOccupancyForm({ ...occupancyForm, occupantRole: event.target.value as 'owner' | 'tenant' })}><option value="owner">Pemilik</option><option value="tenant">Penyewa</option></select></label>
+              <label>Mulai menghuni<input type="date" required value={occupancyForm.startDate} onChange={(event) => setOccupancyForm({ ...occupancyForm, startDate: event.target.value })} /></label>
+              <label>Selesai menghuni<input type="date" required value={occupancyForm.endDate} onChange={(event) => setOccupancyForm({ ...occupancyForm, endDate: event.target.value })} /></label>
+              <label>Catatan<input placeholder="Opsional" value={occupancyForm.notes} onChange={(event) => setOccupancyForm({ ...occupancyForm, notes: event.target.value })} /></label>
+              <button className="primary-action wide" type="submit"><Plus size={18} />Tambah periode penghuni lama</button>
+            </form>
+            <div className="table-wrap"><table className="trace-table"><thead><tr><th>Rumah</th><th>Nama</th><th>Peran</th><th>Mulai</th><th>Selesai</th><th>Catatan</th><th /></tr></thead><tbody>{data.houseOccupancies.length ? [...data.houseOccupancies].sort((a, b) => b.startDate.localeCompare(a.startDate)).map((occupancy) => <tr key={occupancy.id}><td><strong>{data.houses.find((house) => house.id === occupancy.houseId)?.number ?? `CSJ ${occupancy.houseId}`}</strong></td><td>{occupancy.occupantName}</td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td>{occupancy.endDate || <span className="current-occupant-badge">Aktif</span>}</td><td>{occupancy.notes || '—'}</td><td><button className="icon-button danger" disabled={!occupancy.endDate} onClick={() => void removeOccupancy(occupancy)} title={occupancy.endDate ? 'Hapus riwayat' : 'Penghuni aktif tidak dapat dihapus'} type="button"><Trash2 size={15} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada riwayat penghuni.</div></td></tr>}</tbody></table></div>
+          </section>
         </>}
 
         {adminView === 'settings' && <><div className="admin-heading"><div><span>Konfigurasi</span><h2>Pengaturan Kas</h2><p>Kelola rekening pembayaran, saldo awal, dan riwayat tarif.</p></div></div><div className="settings-grid"><section className="panel form-card"><div className="panel-title"><div><span>Informasi publik</span><h3>Rekening dan Saldo Awal</h3></div></div><form className="form-grid" onSubmit={saveSettings}><label>Nama bank<input value={settingsForm.bankName} onChange={(e) => setSettingsForm({ ...settingsForm, bankName: e.target.value })} /></label><label>Nomor rekening<input value={settingsForm.bankAccountNumber} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountNumber: e.target.value })} /></label><label>Nama pemilik rekening<input value={settingsForm.bankAccountHolder} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountHolder: e.target.value })} /></label><label>Saldo awal kas<input type="number" step="1000" value={settingsForm.openingCashBalance} onChange={(e) => setSettingsForm({ ...settingsForm, openingCashBalance: e.target.value })} /></label><label className="wide">Tarif gabungan CSJ02 + CSJ03<input type="number" min="0" step="1000" value={settingsForm.jointFee0203} onChange={(e) => setSettingsForm({ ...settingsForm, jointFee0203: e.target.value })} /></label><button className="primary-action wide" type="submit">Simpan pengaturan</button></form></section><section className="panel form-card"><div className="panel-title"><div><span>Tarif efektif</span><h3>Tambah Riwayat Tarif</h3></div></div><div className="current-tariff"><span>Tarif {monthLabel(activeMonth)}</span><strong>Dihuni {rupiah.format(activeTariff.occupiedFee)} · Kosong {rupiah.format(activeTariff.emptyFee)}</strong></div><form className="form-grid" onSubmit={saveTariff}><label>Berlaku mulai<input type="date" value={tariffForm.effectiveDate} onChange={(e) => setTariffForm({ ...tariffForm, effectiveDate: e.target.value })} /></label><label>Tarif dihuni<input type="number" min="0" step="1000" value={tariffForm.occupiedFee} onChange={(e) => setTariffForm({ ...tariffForm, occupiedFee: e.target.value })} /></label><label>Tarif rumah kosong<input type="number" min="0" step="1000" value={tariffForm.emptyFee} onChange={(e) => setTariffForm({ ...tariffForm, emptyFee: e.target.value })} /></label><label>Catatan<input placeholder="Contoh: keputusan rapat warga" value={tariffForm.notes} onChange={(e) => setTariffForm({ ...tariffForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Tambahkan tarif</button></form><div className="tariff-history">{[...data.tariffs].reverse().map((tariff) => <div key={tariff.id}><span>{tariff.effectiveDate}</span><strong>{rupiah.format(tariff.occupiedFee)} / {rupiah.format(tariff.emptyFee)}</strong></div>)}</div></section></div></>}

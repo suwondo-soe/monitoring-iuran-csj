@@ -1,4 +1,7 @@
-import type { Expense, House, LedgerData, Payment, ReceivableTransaction, ResidenceStatus, Tariff } from '../types'
+import type {
+  Expense, House, HouseOccupancy, LedgerData, OpeningArrearsItem, Payment,
+  ReceivableTransaction, ResidenceStatus, Tariff,
+} from '../types'
 import { DEFAULT_JOINT_FEE } from '../domain'
 import { supabase } from './supabase'
 
@@ -25,6 +28,28 @@ type PaymentRow = {
   extra_type: string
   payment_method?: string | null
   notes?: string | null
+  opening_arrears_item_id?: string | null
+}
+
+type OccupancyRow = {
+  id: string
+  house_id: number
+  occupant_name: string
+  occupant_role: 'owner' | 'tenant'
+  start_date: string
+  end_date: string | null
+  notes: string | null
+}
+
+type OpeningArrearsRow = {
+  id: string
+  house_id: number | null
+  occupancy_id: string | null
+  debtor_name: string
+  debtor_role: 'owner' | 'tenant' | 'former_tenant' | 'unassigned'
+  cutoff_date: string
+  original_amount: number | string
+  notes: string | null
 }
 
 type ExpenseRow = {
@@ -69,7 +94,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     'arrears_amount', 'extra_amount', 'extra_type',
   ].join(',')
   const paymentFields = sessionData.session
-    ? `${publicPaymentFields},payment_method,notes`
+    ? `${publicPaymentFields},payment_method,notes,opening_arrears_item_id`
     : publicPaymentFields
   const [housesResult, tariffsResult, paymentsResult, expensesResult, settingsResult] =
     await Promise.all([
@@ -83,6 +108,36 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   const error = housesResult.error ?? tariffsResult.error ?? paymentsResult.error ??
     expensesResult.error ?? settingsResult.error
   if (error) throw error
+
+  let houseOccupancies: HouseOccupancy[] = []
+  let openingArrearsItems: OpeningArrearsItem[] = []
+  if (sessionData.session) {
+    const [occupanciesResult, arrearsResult] = await Promise.all([
+      client.from('house_occupancies').select('*').order('start_date', { ascending: false }),
+      client.from('opening_arrears_items').select('*').order('cutoff_date', { ascending: false }),
+    ])
+    const adminError = occupanciesResult.error ?? arrearsResult.error
+    if (adminError) throw adminError
+    houseOccupancies = (occupanciesResult.data as OccupancyRow[]).map((row) => ({
+      id: row.id,
+      houseId: row.house_id,
+      occupantName: row.occupant_name,
+      occupantRole: row.occupant_role,
+      startDate: row.start_date,
+      endDate: row.end_date ?? '',
+      notes: row.notes ?? '',
+    }))
+    openingArrearsItems = (arrearsResult.data as OpeningArrearsRow[]).map((row) => ({
+      id: row.id,
+      houseId: row.house_id,
+      occupancyId: row.occupancy_id,
+      debtorName: row.debtor_name,
+      debtorRole: row.debtor_role,
+      cutoffDate: row.cutoff_date,
+      originalAmount: Number(row.original_amount),
+      notes: row.notes ?? '',
+    }))
+  }
 
   const houses = (housesResult.data as HouseRow[]).map((row): House => ({
     id: row.id,
@@ -115,6 +170,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     extraType: row.extra_type,
     method: row.payment_method ?? '',
     notes: row.notes ?? '',
+    openingArrearsItemId: row.opening_arrears_item_id ?? null,
   }))
 
   const expenseRows = expensesResult.data as ExpenseRow[]
@@ -150,6 +206,8 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
 
   return {
     houses,
+    houseOccupancies,
+    openingArrearsItems,
     tariffs,
     payments,
     expenses,
@@ -175,6 +233,7 @@ export async function createRemotePayments(payments: Payment[]) {
     extra_type: payment.extraType,
     payment_method: payment.method,
     notes: payment.notes || null,
+    opening_arrears_item_id: payment.openingArrearsItemId || null,
   }))
   const { error } = await requireClient().from('payments').insert(rows)
   if (error) throw error
@@ -196,6 +255,7 @@ export async function updateRemotePayment(payment: Payment) {
     extra_type: payment.extraType,
     payment_method: payment.method,
     notes: payment.notes || null,
+    opening_arrears_item_id: payment.openingArrearsItemId || null,
   }).eq('id', payment.id)
   if (error) throw error
 }
@@ -267,8 +327,15 @@ export async function createRemoteTariff(tariff: Tariff) {
   if (error) throw error
 }
 
-export async function updateRemoteHouse(house: House) {
-  const { error } = await requireClient().from('houses').update({
+export async function updateRemoteHouse(house: House, changeDate = new Date().toISOString().slice(0, 10)) {
+  const client = requireClient()
+  const { data: previous, error: previousError } = await client.from('houses')
+    .select('owner_name,residence_status,tenant_name')
+    .eq('id', house.id)
+    .single()
+  if (previousError) throw previousError
+
+  const { error } = await client.from('houses').update({
     owner_name: house.owner,
     residence_status: house.residenceStatus,
     tenant_name: house.tenant || null,
@@ -278,6 +345,127 @@ export async function updateRemoteHouse(house: House) {
     billing_start_month: `${house.billingStartMonth}-01`,
   }).eq('id', house.id)
   if (error) throw error
+
+  const previousName = previous.residence_status === 'rented'
+    ? (previous.tenant_name ?? '')
+    : previous.residence_status === 'owner_occupied' ? previous.owner_name : ''
+  const previousRole = previous.residence_status === 'rented' ? 'tenant' : 'owner'
+  const nextName = house.residenceStatus === 'rented'
+    ? house.tenant
+    : house.residenceStatus === 'owner_occupied' ? house.owner : ''
+  const nextRole = house.residenceStatus === 'rented' ? 'tenant' : 'owner'
+  if (previousName.trim() === nextName.trim() && previousRole === nextRole) return
+
+  const { data: activeOccupancy, error: activeError } = await client.from('house_occupancies')
+    .select('id')
+    .eq('house_id', house.id)
+    .is('end_date', null)
+    .maybeSingle()
+  if (activeError) throw activeError
+  if (activeOccupancy) {
+    const { error: closeError } = await client.from('house_occupancies')
+      .update({ end_date: changeDate })
+      .eq('id', activeOccupancy.id)
+    if (closeError) throw closeError
+  }
+  if (nextName.trim()) {
+    const { error: insertError } = await client.from('house_occupancies').insert({
+      house_id: house.id,
+      occupant_name: nextName.trim(),
+      occupant_role: nextRole,
+      start_date: house.residenceStatus === 'rented' && house.rentalStartDate
+        ? house.rentalStartDate
+        : changeDate,
+      notes: 'Dibuat otomatis dari perubahan data rumah',
+    })
+    if (insertError) throw insertError
+  }
+}
+
+export async function createRemoteOccupancy(occupancy: HouseOccupancy) {
+  const { error } = await requireClient().from('house_occupancies').insert({
+    id: occupancy.id,
+    house_id: occupancy.houseId,
+    occupant_name: occupancy.occupantName,
+    occupant_role: occupancy.occupantRole,
+    start_date: occupancy.startDate,
+    end_date: occupancy.endDate || null,
+    notes: occupancy.notes || null,
+  })
+  if (error) throw error
+}
+
+export async function deleteRemoteOccupancy(id: string) {
+  const { error } = await requireClient().from('house_occupancies').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function createRemoteOpeningArrearsItem(item: OpeningArrearsItem) {
+  const { error } = await requireClient().from('opening_arrears_items').insert({
+    id: item.id,
+    house_id: item.houseId,
+    occupancy_id: item.occupancyId,
+    debtor_name: item.debtorName,
+    debtor_role: item.debtorRole,
+    cutoff_date: item.cutoffDate,
+    original_amount: item.originalAmount,
+    notes: item.notes || null,
+  })
+  if (error) throw error
+}
+
+export async function deleteRemoteOpeningArrearsItem(id: string) {
+  const { error } = await requireClient().from('opening_arrears_items').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function setRemoteOpeningArrearsTotal(houseIds: number[], total: number) {
+  const client = requireClient()
+  const { data, error } = await client.from('opening_arrears_items')
+    .select('id,house_id,debtor_role,original_amount')
+    .in('house_id', houseIds)
+  if (error) throw error
+
+  const rows = (data ?? []) as Array<{ id: string; house_id: number; debtor_role: string; original_amount: number | string }>
+  const assignedTotal = rows
+    .filter((row) => row.debtor_role !== 'unassigned')
+    .reduce((sum, row) => sum + Number(row.original_amount), 0)
+  if (total < assignedTotal) {
+    throw new Error(`Nilai total tidak boleh lebih kecil dari rincian debitur sebesar ${assignedTotal}.`)
+  }
+
+  const unassignedRows = rows.filter((row) => row.debtor_role === 'unassigned')
+  const unassignedTotal = total - assignedTotal
+  if (unassignedRows.length) {
+    const [primary, ...duplicates] = unassignedRows
+    if (unassignedTotal > 0) {
+      const { error: updateError } = await client.from('opening_arrears_items')
+        .update({ original_amount: unassignedTotal })
+        .eq('id', primary.id)
+      if (updateError) throw updateError
+    } else {
+      const { error: deleteError } = await client.from('opening_arrears_items').delete().eq('id', primary.id)
+      if (deleteError) throw deleteError
+    }
+    if (duplicates.length) {
+      const { error: duplicateError } = await client.from('opening_arrears_items')
+        .delete().in('id', duplicates.map((row) => row.id))
+      if (duplicateError) throw duplicateError
+    }
+    return
+  }
+
+  if (unassignedTotal > 0) {
+    const { error: insertError } = await client.from('opening_arrears_items').insert({
+      house_id: houseIds[0],
+      debtor_name: 'Belum dialokasikan',
+      debtor_role: 'unassigned',
+      cutoff_date: '2025-12-31',
+      original_amount: unassignedTotal,
+      notes: 'Saldo agregat; rincian pihak yang berutang belum ditentukan',
+    })
+    if (insertError) throw insertError
+  }
 }
 
 export async function updateRemoteSettings(settings: Record<string, string | number>) {
