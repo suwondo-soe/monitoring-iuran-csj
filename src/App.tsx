@@ -425,7 +425,7 @@ function App() {
       </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
       <div className="admin-content">
         {adminView === 'payments' && <>
-          <div className="admin-heading"><div><span>Pencatatan iuran</span><h2>Pembayaran Warga</h2><p>Pilih akun, periksa kewajiban, lalu catat pembayarannya.</p></div><div className="admin-stat"><span>Periode</span><strong>{monthLabel(activeMonth)}</strong></div></div>
+          <div className="admin-heading"><div><span>Pencatatan penerimaan</span><h2>Penerimaan Kas dari Warga</h2><p>Pilih akun, periksa kewajiban, lalu catat penerimaan kasnya.</p></div><div className="admin-stat"><span>Periode</span><strong>{monthLabel(activeMonth)}</strong></div></div>
           <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayaran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
           <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
             <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
@@ -443,7 +443,7 @@ function App() {
               </div>
               <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label>
               <label>Tambahan<input type="number" min="0" step="1000" value={paymentForm.extra} onChange={(e) => setPaymentForm({ ...paymentForm, extra: e.target.value })} /></label>
-              <label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Lainnya</option></select></label>
+              <label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Program A</option><option>Program B</option><option>Program C</option><option>Iuran Ramadhan+Idul Fitri</option><option>Lainnya</option></select></label>
               <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label>
               <button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
             </form>
