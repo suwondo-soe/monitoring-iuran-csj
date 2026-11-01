@@ -967,7 +967,7 @@ function App() {
       </div>
     </section>}
 
-    <footer><span>Monitoring Iuran Warga CSJ</span><span>Data diperbarui langsung dari Supabase</span></footer>
+    <footer><span>© SuwondoSoe</span><span>Data diperbarui langsung dari Supabase</span></footer>
 
     {showRecap && <div className="modal-backdrop" role="presentation"><section className="recap-dialog" role="dialog" aria-modal="true" aria-label={`Rekap pembayaran ${selected.code}`}>
       <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
