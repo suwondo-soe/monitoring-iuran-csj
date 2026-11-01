@@ -13,8 +13,10 @@ pengurus yang masuk melalui Supabase Auth.
 - Rekap pembayaran 2026–2028 dengan status lunas, belum bayar, dibayar sebagian, menunggu konfirmasi, dan total kewajiban sampai tanggal akses
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
 - Tanggal transaksi terpisah dari periode iuran, termasuk pembayaran beberapa bulan sekaligus pada tanggal yang sama
+- Penerimaan iuran dan penerimaan lain-lain dapat dicatat secara terpisah
 - Pencatatan pengeluaran
 - Klasifikasi pengeluaran bertingkat untuk Beban, Piutang, dan Lainnya
+- Laporan posisi keuangan kumulatif dengan rincian penerimaan dan pengeluaran yang dapat dibuka
 - Tampilan publik hanya-baca
 - Login admin dengan Supabase Auth
 - Pengaturan rekening, saldo awal, dan tarif dari ruang admin

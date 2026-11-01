@@ -146,15 +146,19 @@ export function statementForAccount(
   }
 }
 
-export function cashSummary(data: LedgerData, activeMonth: string) {
+export function cashSummary(data: LedgerData, activeMonth: string, asOfDate: string) {
   const monthIncome = data.payments
-    .filter((payment) => payment.paymentDate.startsWith(activeMonth))
+    .filter((payment) => payment.paymentDate.startsWith(activeMonth) && payment.paymentDate <= asOfDate)
     .reduce((sum, payment) => sum + paymentTotal(payment), 0)
   const monthExpenses = data.expenses
-    .filter((expense) => expense.date.startsWith(activeMonth))
+    .filter((expense) => expense.date.startsWith(activeMonth) && expense.date <= asOfDate)
     .reduce((sum, expense) => sum + expense.amount, 0)
-  const allIncome = data.payments.reduce((sum, payment) => sum + paymentTotal(payment), 0)
-  const allExpenses = data.expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const allIncome = data.payments
+    .filter((payment) => payment.paymentDate <= asOfDate)
+    .reduce((sum, payment) => sum + paymentTotal(payment), 0)
+  const allExpenses = data.expenses
+    .filter((expense) => expense.date <= asOfDate)
+    .reduce((sum, expense) => sum + expense.amount, 0)
 
   return {
     monthIncome,

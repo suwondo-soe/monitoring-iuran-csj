@@ -80,6 +80,10 @@ const expenseDetailsByCategory: Record<string, string[]> = {
   ],
   Lainnya: ['Lainnya'],
 }
+const otherReceiptTypes = [
+  'Denda', 'Sumbangan', 'Program A', 'Program B', 'Program C',
+  'Iuran Ramadhan+Idul Fitri', 'Lainnya',
+]
 const legacyExpenseCategory: Record<string, string> = {
   Security: 'Beban', Cleaning: 'Beban', Maintenance: 'Beban', Administration: 'Beban', Other: 'Lainnya',
 }
@@ -122,9 +126,11 @@ function App() {
   const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [paymentForm, setPaymentForm] = useState({
+    receiptKind: 'dues',
     paymentDate: today,
     periods: [{ month: activeMonth, mandatory: '0' }],
-    arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '',
+    arrears: '0', otherPeriod: activeMonth, otherAmount: '',
+    extraType: 'Denda', method: 'Transfer', notes: '',
   })
   const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Beban', detail: 'Beban Security', amount: '', description: '' })
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
@@ -161,9 +167,8 @@ function App() {
   const accounts = useMemo(() => buildBillingAccounts(data.houses), [data.houses])
   const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
   const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
-  const cash = useMemo(() => cashSummary(data, activeMonth), [data, activeMonth])
+  const cash = useMemo(() => cashSummary(data, activeMonth, today), [data, activeMonth])
   const activeTariff = useMemo(() => tariffForMonth(data.tariffs, activeMonth), [data.tariffs, activeMonth])
-  const monthExpenses = data.expenses.filter((expense) => expense.date.startsWith(activeMonth))
   const expected = statements.reduce((sum, account) => sum + account.monthlyDue, 0)
   const collected = statements.reduce((sum, account) => sum + account.paidThisPeriod, 0)
   const totalArrears = statements.reduce((sum, account) => sum + account.arrearsBalance, 0)
@@ -192,6 +197,39 @@ function App() {
     () => statementForAccount(selected, data, currentMonth),
     [data, selected],
   )
+  const financialReport = useMemo(() => {
+    const payments = data.payments.filter((payment) => payment.paymentDate <= today)
+    const expenses = data.expenses.filter((expense) => expense.date <= today)
+    const mandatoryIncome = payments.reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
+    const arrearsIncome = payments.reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+    const otherIncome = payments.reduce((sum, payment) => sum + payment.extraAmount, 0)
+    const otherBreakdown = new Map<string, number>()
+    payments.forEach((payment) => {
+      if (payment.extraAmount <= 0) return
+      const label = payment.extraType && payment.extraType !== 'Tidak ada' ? payment.extraType : 'Lainnya'
+      otherBreakdown.set(label, (otherBreakdown.get(label) ?? 0) + payment.extraAmount)
+    })
+    const expenseGroups = ['Beban', 'Piutang', 'Lainnya'].map((category) => {
+      const details = new Map<string, number>()
+      let total = 0
+      expenses.forEach((expense) => {
+        const normalizedCategory = legacyExpenseCategory[expense.category] ?? expense.category
+        if (normalizedCategory !== category) return
+        const detail = expense.detail || legacyExpenseDetail[expense.category] || category
+        total += expense.amount
+        details.set(detail, (details.get(detail) ?? 0) + expense.amount)
+      })
+      return { category, total, details: Array.from(details.entries()).sort(([a], [b]) => a.localeCompare(b)) }
+    })
+    const totalExpenses = expenses.reduce((sum, expense) => sum + expense.amount, 0)
+    return {
+      mandatoryIncome, arrearsIncome, duesIncome: mandatoryIncome + arrearsIncome,
+      otherIncome, totalIncome: mandatoryIncome + arrearsIncome + otherIncome,
+      otherBreakdown: Array.from(otherBreakdown.entries()).sort(([a], [b]) => a.localeCompare(b)),
+      expenseGroups, totalExpenses,
+      netPosition: data.openingCashBalance + mandatoryIncome + arrearsIncome + otherIncome - totalExpenses,
+    }
+  }, [data])
 
   const outstandingForPeriod = (account: BillingAccount, month: string) => {
     const due = monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
@@ -261,29 +299,47 @@ function App() {
 
   const savePayment = async (event: FormEvent) => {
     event.preventDefault(); setError('')
-    const periodMonths = paymentForm.periods.map((period) => period.month)
-    if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
     if (!paymentForm.paymentDate) { setError('Tanggal pembayaran wajib dipilih.'); return }
-    const arrearsAmount = Number(paymentForm.arrears)
-    const extraAmount = Number(paymentForm.extra)
-    const paidPeriods = paymentForm.periods
-      .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
-      .filter((period) => period.mandatoryAmount > 0)
-    const recordedPeriods = paidPeriods.length ? paidPeriods : [{ month: paymentForm.periods[0].month, mandatoryAmount: 0 }]
-    if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) + arrearsAmount + extraAmount <= 0) { setError('Jumlah pembayaran harus lebih dari nol.'); return }
-    const payments: Payment[] = recordedPeriods.map((period, index) => ({
-      id: crypto.randomUUID(), houseId: selected.houseIds[0], month: period.month,
-      paymentDate: paymentForm.paymentDate, mandatoryAmount: period.mandatoryAmount,
-      arrearsAmount: index === 0 ? arrearsAmount : 0,
-      extraAmount: index === 0 ? extraAmount : 0,
-      extraType: paymentForm.extraType, method: paymentForm.method, notes: paymentForm.notes,
-    }))
+    let payments: Payment[]
+    let successMessage: string
+    if (paymentForm.receiptKind === 'other') {
+      const extraAmount = Number(paymentForm.otherAmount)
+      if (!paymentForm.otherPeriod) { setError('Periode penerimaan wajib dipilih.'); return }
+      if (extraAmount <= 0) { setError('Nilai penerimaan lain-lain harus lebih dari nol.'); return }
+      payments = [{
+        id: crypto.randomUUID(), houseId: selected.houseIds[0], month: paymentForm.otherPeriod,
+        paymentDate: paymentForm.paymentDate, mandatoryAmount: 0, arrearsAmount: 0,
+        extraAmount, extraType: paymentForm.extraType,
+        method: paymentForm.method, notes: paymentForm.notes,
+      }]
+      successMessage = `Penerimaan lain-lain ${selected.code} berhasil dicatat.`
+    } else {
+      const periodMonths = paymentForm.periods.map((period) => period.month)
+      if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
+      const arrearsAmount = Number(paymentForm.arrears)
+      const paidPeriods = paymentForm.periods
+        .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
+        .filter((period) => period.mandatoryAmount > 0)
+      const recordedPeriods = paidPeriods.length ? paidPeriods : [{ month: paymentForm.periods[0].month, mandatoryAmount: 0 }]
+      if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) + arrearsAmount <= 0) { setError('Jumlah penerimaan iuran harus lebih dari nol.'); return }
+      payments = recordedPeriods.map((period, index) => ({
+        id: crypto.randomUUID(), houseId: selected.houseIds[0], month: period.month,
+        paymentDate: paymentForm.paymentDate, mandatoryAmount: period.mandatoryAmount,
+        arrearsAmount: index === 0 ? arrearsAmount : 0,
+        extraAmount: 0, extraType: 'Tidak ada', method: paymentForm.method, notes: paymentForm.notes,
+      }))
+      successMessage = `Penerimaan iuran ${selected.code} untuk ${payments.length} periode berhasil dicatat.`
+    }
     try {
       if (supabaseConfigured) await createRemotePayments(payments)
       setData((current) => ({ ...current, payments: [...payments, ...current.payments] }))
-      setPaymentForm({ paymentDate: today, periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '' })
-      flash(`Pembayaran ${selected.code} untuk ${payments.length} periode berhasil dicatat.`)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran gagal disimpan.') }
+      setPaymentForm((form) => ({
+        receiptKind: form.receiptKind, paymentDate: today,
+        periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0',
+        otherPeriod: activeMonth, otherAmount: '', extraType: 'Denda', method: 'Transfer', notes: '',
+      }))
+      flash(successMessage)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Penerimaan gagal disimpan.') }
   }
 
   const removePayment = async (payment: Payment) => {
@@ -374,7 +430,7 @@ function App() {
     <header className="site-header">
       <div className="brand"><div className="brand-mark">CSJ</div><div><span>Transparansi kas warga</span><h1>Monitoring Iuran Warga CSJ</h1></div></div>
       <div className="header-actions">
-        <label className="month-control"><CalendarDays size={17} /><span>Periode</span><input type="month" min="2026-01" value={activeMonth} onChange={(event) => setActiveMonth(event.target.value)} /></label>
+        {mode === 'admin' && <label className="month-control"><CalendarDays size={17} /><span>Periode</span><input type="month" min="2026-01" value={activeMonth} onChange={(event) => setActiveMonth(event.target.value)} /></label>}
         {canEdit ? <button className="admin-button" onClick={() => setMode(mode === 'admin' ? 'public' : 'admin')} type="button"><ShieldCheck size={18} />{mode === 'admin' ? 'Lihat halaman warga' : 'Buka admin'}</button> : <button className="admin-button" onClick={() => setShowLogin(true)} type="button"><LogIn size={18} />Login Admin</button>}
       </div>
     </header>
@@ -386,7 +442,7 @@ function App() {
       <nav className="public-nav" aria-label="Navigasi warga">
         <button className={publicView === 'overview' ? 'active' : ''} onClick={() => setPublicView('overview')}><Home size={18} />Ringkasan</button>
         <button className={publicView === 'dues' ? 'active' : ''} onClick={() => setPublicView('dues')}><ReceiptText size={18} />Status Iuran</button>
-        <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Pengeluaran</button>
+        <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Laporan Posisi Keuangan</button>
       </nav>
 
       {publicView === 'overview' && <div className="page-stack">
@@ -426,10 +482,20 @@ function App() {
         <div className="table-wrap"><table><thead><tr><th>Akun</th><th>Nama</th><th>Tagihan</th><th>Terbayar</th><th>Tunggakan</th><th>Status</th></tr></thead><tbody>{statements.map((item) => <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.residentName}</td><td>{rupiah.format(item.monthlyDue)}</td><td>{rupiah.format(item.paidThisPeriod)}</td><td>{rupiah.format(item.arrearsBalance)}</td><td><span className={`mini-status ${item.isPaid ? 'paid' : 'due'}`}>{item.isPaid ? 'Lunas' : 'Belum'}</span></td></tr>)}</tbody></table></div>
       </section>}
 
-      {publicView === 'expenses' && <section className="panel page-panel">
-        <div className="panel-title"><div><span>Laporan {monthLabel(activeMonth)}</span><h2>Pengeluaran Kas</h2><p>Rincian penggunaan dana lingkungan pada periode yang dipilih.</p></div><div className="total-chip"><span>Total</span><strong>{rupiah.format(cash.monthExpenses)}</strong></div></div>
-        <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Detail</th><th>Keterangan</th><th>Jumlah</th></tr></thead><tbody>{monthExpenses.length ? monthExpenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{legacyExpenseCategory[expense.category] ?? expense.category}</td><td>{expense.detail || legacyExpenseDetail[expense.category] || '—'}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td></tr>) : <tr><td colSpan={5}><div className="empty-state">Belum ada pengeluaran pada periode ini.</div></td></tr>}</tbody></table></div>
-      </section>}
+      {publicView === 'expenses' && <div className="page-stack financial-page">
+        <section className="financial-position-card"><div><span>Posisi keuangan kumulatif</span><h2>Laporan Posisi Keuangan</h2><p>Akumulasi penerimaan dan pengeluaran sampai {pageOpenedLabel}.</p></div><div><span>Posisi kas bersih</span><strong>{rupiah.format(financialReport.netPosition)}</strong></div></section>
+        <div className="financial-columns">
+          <section className="panel financial-column income-column">
+            <div className="financial-column-heading"><div><span>PENERIMAAN</span><h3>Penerimaan Kas</h3></div><strong>{rupiah.format(financialReport.totalIncome)}</strong></div>
+            <details className="financial-detail"><summary><span>Penerimaan Iuran Warga</span><strong>{rupiah.format(financialReport.duesIncome)}</strong></summary><div className="financial-breakdown"><div><span>Iuran bulanan</span><strong>{rupiah.format(financialReport.mandatoryIncome)}</strong></div><div><span>Pelunasan tunggakan</span><strong>{rupiah.format(financialReport.arrearsIncome)}</strong></div></div></details>
+            <details className="financial-detail"><summary><span>Penerimaan Lain-Lain</span><strong>{rupiah.format(financialReport.otherIncome)}</strong></summary><div className="financial-breakdown">{financialReport.otherBreakdown.length ? financialReport.otherBreakdown.map(([label, amount]) => <div key={label}><span>{label}</span><strong>{rupiah.format(amount)}</strong></div>) : <p>Belum ada penerimaan lain-lain.</p>}</div></details>
+          </section>
+          <section className="panel financial-column expense-column">
+            <div className="financial-column-heading"><div><span>PENGELUARAN</span><h3>Pengeluaran Kas</h3></div><strong>{rupiah.format(financialReport.totalExpenses)}</strong></div>
+            {financialReport.expenseGroups.map((group) => <details className="financial-detail" key={group.category}><summary><span>{group.category}</span><strong>{rupiah.format(group.total)}</strong></summary><div className="financial-breakdown">{group.details.length ? group.details.map(([label, amount]) => <div key={label}><span>{label}</span><strong>{rupiah.format(amount)}</strong></div>) : <p>Belum ada transaksi {group.category.toLowerCase()}.</p>}</div></details>)}
+          </section>
+        </div>
+      </div>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
         <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Penerimaan</button>
@@ -442,11 +508,12 @@ function App() {
           <div className="admin-heading"><div><span>Pencatatan penerimaan</span><h2>Penerimaan Kas dari Warga</h2><p>Pilih akun, periksa kewajiban, lalu catat penerimaan kasnya.</p></div><div className="admin-stat"><span>Periode</span><strong>{monthLabel(activeMonth)}</strong></div></div>
           <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayar iuran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
           <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
-            <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
+            <span className="receipt-kind-label">Jenis penerimaan</span><div className="receipt-kind-switch"><button className={paymentForm.receiptKind === 'dues' ? 'active' : ''} onClick={() => setPaymentForm({ ...paymentForm, receiptKind: 'dues' })} type="button"><ReceiptText size={17} /><span>Penerimaan Iuran<small>Iuran bulanan dan tunggakan</small></span></button><button className={paymentForm.receiptKind === 'other' ? 'active' : ''} onClick={() => setPaymentForm({ ...paymentForm, receiptKind: 'other' })} type="button"><Banknote size={17} /><span>Penerimaan Lain-Lain<small>Denda, program, dan lainnya</small></span></button></div>
+            {paymentForm.receiptKind === 'dues' && <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>}
             <form className="form-grid" onSubmit={savePayment}>
-              <label>Tanggal bayar<input type="date" required value={paymentForm.paymentDate} onChange={(e) => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} /></label>
+              <label>Tanggal penerimaan<input type="date" required value={paymentForm.paymentDate} onChange={(e) => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} /></label>
               <label>Metode<select value={paymentForm.method} onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
-              <div className="payment-periods wide">
+              {paymentForm.receiptKind === 'dues' ? <><div className="payment-periods wide">
                 <div className="payment-period-heading"><div><strong>Periode pembayaran</strong><span>Pilih bulan dan tahun. Tambahkan baris jika satu transaksi membayar beberapa bulan.</span></div><button className="secondary-action" type="button" onClick={addPaymentPeriod}><Plus size={16} />Tambah periode</button></div>
                 {paymentForm.periods.map((period, index) => <div className="payment-period-row" key={`${index}-${period.month}`}>
                   <label>Bulan & tahun<input type="month" min="2026-01" max="2028-12" required value={period.month} onChange={(e) => updatePaymentPeriod(index, e.target.value)} /></label>
@@ -456,13 +523,16 @@ function App() {
                 <div className="payment-period-total"><span>Total iuran periode terpilih</span><strong>{rupiah.format(paymentPeriodTotal)}</strong></div>
               </div>
               <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label>
-              <label>Tambahan<input type="number" min="0" step="1000" value={paymentForm.extra} onChange={(e) => setPaymentForm({ ...paymentForm, extra: e.target.value })} /></label>
-              <label>Jenis tambahan<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}><option>Tidak ada</option><option>Denda</option><option>Sumbangan</option><option>Program A</option><option>Program B</option><option>Program C</option><option>Iuran Ramadhan+Idul Fitri</option><option>Lainnya</option></select></label>
+              </> : <>
+                <label>Periode penerimaan<input type="month" min="2026-01" max="2028-12" required value={paymentForm.otherPeriod} onChange={(e) => setPaymentForm({ ...paymentForm, otherPeriod: e.target.value })} /></label>
+                <label>Jenis penerimaan lain-lain<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
+                <label className="wide">Nilai penerimaan<input type="number" min="0" step="1000" required value={paymentForm.otherAmount} onChange={(e) => setPaymentForm({ ...paymentForm, otherAmount: e.target.value })} /></label>
+              </>}
               <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label>
-              <button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
+              <button className="primary-action wide" type="submit"><Plus size={18} />{paymentForm.receiptKind === 'dues' ? `Simpan penerimaan iuran${paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}` : 'Simpan penerimaan lain-lain'}</button>
             </form>
           </section></div>
-          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Iuran</th><th>Tunggakan</th><th>Tambahan</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{rupiah.format(payment.mandatoryAmount)}</td><td>{rupiah.format(payment.arrearsAmount)}</td><td>{rupiah.format(payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus pembayaran"><Trash2 size={16} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada pembayaran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat penerimaan akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Jenis penerimaan</th><th>Detail</th><th>Nilai</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => { const duesAmount = payment.mandatoryAmount + payment.arrearsAmount; const kind = duesAmount > 0 && payment.extraAmount > 0 ? 'Gabungan (data lama)' : payment.extraAmount > 0 ? 'Penerimaan Lain-Lain' : 'Penerimaan Iuran'; return <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{kind}</td><td>{payment.extraAmount > 0 ? payment.extraType : payment.arrearsAmount > 0 ? 'Iuran + tunggakan' : 'Iuran bulanan'}</td><td>{rupiah.format(duesAmount + payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus penerimaan"><Trash2 size={16} /></button></td></tr> }) : <tr><td colSpan={7}><div className="empty-state">Belum ada penerimaan untuk akun ini.</div></td></tr>}</tbody></table></div></section>
         </>}
 
         {adminView === 'expenses' && <>
