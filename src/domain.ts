@@ -4,6 +4,7 @@ import type {
   House,
   LedgerData,
   Payment,
+  ReceivableTransaction,
   Tariff,
 } from './types'
 
@@ -101,6 +102,9 @@ export function monthlyFeeForAccount(
 const paymentTotal = (payment: Payment) =>
   payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount
 
+export const receivableCashMovement = (transaction: ReceivableTransaction) =>
+  transaction.transactionType === 'repayment' ? transaction.amount : -transaction.amount
+
 export function statementForAccount(
   account: BillingAccount,
   data: LedgerData,
@@ -161,7 +165,7 @@ export function cashSummary(data: LedgerData, activeMonth: string, asOfDate: str
     .reduce((sum, expense) => sum + expense.amount, 0)
   const allReceivableCashFlow = data.receivableTransactions
     .filter((transaction) => transaction.date <= asOfDate)
-    .reduce((sum, transaction) => sum + (transaction.transactionType === 'repayment' ? transaction.amount : -transaction.amount), 0)
+    .reduce((sum, transaction) => sum + receivableCashMovement(transaction), 0)
 
   return {
     monthIncome,
