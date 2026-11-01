@@ -418,7 +418,7 @@ function App() {
       </section>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
-        <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Pembayaran</button>
+        <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Penerimaan</button>
         <button className={adminView === 'expenses' ? 'active' : ''} onClick={() => setAdminView('expenses')}><WalletCards size={18} />Pengeluaran</button>
         <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
         <button className={adminView === 'settings' ? 'active' : ''} onClick={() => setAdminView('settings')}><Settings2 size={18} />Pengaturan</button>
@@ -426,7 +426,7 @@ function App() {
       <div className="admin-content">
         {adminView === 'payments' && <>
           <div className="admin-heading"><div><span>Pencatatan penerimaan</span><h2>Penerimaan Kas dari Warga</h2><p>Pilih akun, periksa kewajiban, lalu catat penerimaan kasnya.</p></div><div className="admin-stat"><span>Periode</span><strong>{monthLabel(activeMonth)}</strong></div></div>
-          <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayaran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
+          <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayar iuran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
           <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
             <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
             <form className="form-grid" onSubmit={savePayment}>
