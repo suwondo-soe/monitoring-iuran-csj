@@ -140,13 +140,13 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     (settingsResult.data as SettingRow[]).map((row) => [row.key, row.value]),
   )
   const pendingSetting = settings.get('pending_payment_months')
-  const pendingPaymentMonths = Array.isArray(pendingSetting)
+  const pendingPaymentMonths = (Array.isArray(pendingSetting)
     ? pendingSetting.filter((item): item is { houseId: number; month: string; notes: string } =>
       typeof item === 'object' && item !== null &&
       typeof (item as { houseId?: unknown }).houseId === 'number' &&
       typeof (item as { month?: unknown }).month === 'string' &&
       typeof (item as { notes?: unknown }).notes === 'string')
-    : [{ houseId: 4, month: '2026-04', notes: 'Penghuni menyatakan sudah membayar; menunggu bukti pembayaran.' }]
+    : []).filter((item) => !(item.houseId === 4 && item.month === '2026-04'))
 
   return {
     houses,

@@ -19,7 +19,7 @@ import {
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
-  AdminView, BillingAccount, Expense, House, LedgerData, Payment, PublicView,
+  AdminView, BillingAccount, Expense, House, LedgerData, Payment, PendingPaymentMonth, PublicView,
   ReceivableTransaction, ResidenceStatus, Tariff,
 } from './types'
 
@@ -65,7 +65,7 @@ const seedLedger: LedgerData = {
   tariffs: [{ id: 'initial', effectiveDate: '2026-01-01', occupiedFee: DEFAULT_OCCUPIED_FEE, emptyFee: DEFAULT_EMPTY_FEE, notes: 'Tarif awal CSJ' }],
   payments: [], expenses: [], receivableTransactions: [], openingCashBalance: 0, jointFee0203: DEFAULT_JOINT_FEE,
   bankName: 'Bank Neo Commerce', bankAccountNumber: '5859457243882555', bankAccountHolder: 'Suwondo',
-  pendingPaymentMonths: [{ houseId: 4, month: '2026-04', notes: 'Penghuni menyatakan sudah membayar; menunggu bukti pembayaran.' }],
+  pendingPaymentMonths: [],
 }
 
 const residenceLabel: Record<ResidenceStatus, string> = {
@@ -178,7 +178,13 @@ function App() {
     setLoading(true); setError('')
     try {
       const loadedLedger = supabaseConfigured ? await loadRemoteLedger() : JSON.parse(localStorage.getItem('csj-ledger-v2') || 'null') ?? seedLedger
-      const ledger: LedgerData = { ...loadedLedger, receivableTransactions: loadedLedger.receivableTransactions ?? [] }
+      const ledger: LedgerData = {
+        ...loadedLedger,
+        receivableTransactions: loadedLedger.receivableTransactions ?? [],
+        pendingPaymentMonths: (loadedLedger.pendingPaymentMonths ?? []).filter((item: PendingPaymentMonth) =>
+          !(item.houseId === 4 && item.month === '2026-04'),
+        ),
+      }
       setData(ledger)
       setSettingsForm({
         openingCashBalance: String(ledger.openingCashBalance), jointFee0203: String(ledger.jointFee0203),
@@ -226,7 +232,7 @@ function App() {
     )
     return {
       month, due, paid, outstanding, isPaid, isNotApplicable,
-      isPending: Boolean(pendingReview), pendingNotes: pendingReview?.notes ?? '',
+      isPending: Boolean(pendingReview) && outstanding > 0, pendingNotes: outstanding > 0 ? pendingReview?.notes ?? '' : '',
       isPartial: paid > 0 && outstanding > 0,
       isFuture: month > currentMonth && !isPaid,
     }
@@ -402,6 +408,8 @@ function App() {
   const selectAccount = (account: BillingAccount) => {
     const statement = statements.find((item) => item.id === account.id) ?? selected
     setSelectedAccountId(account.id)
+    setRecapYear(Math.min(2028, Math.max(2026, now.getFullYear())))
+    setShowRecap(true)
     setPaymentForm((form) => ({
       ...form,
       periods: [{ month: activeMonth, mandatory: String(statement.currentBalance) }],
@@ -542,6 +550,21 @@ function App() {
       setData((current) => ({ ...current, receivableTransactions: current.receivableTransactions.filter((item) => item.id !== transaction.id) }))
       flash('Transaksi piutang dihapus.')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Transaksi piutang gagal dihapus.') }
+  }
+
+  const removeJournalEntry = async (entry: CashJournalEntry) => {
+    if (entry.entityType === 'payment-dues' || entry.entityType === 'payment-other') {
+      const payment = data.payments.find((item) => item.id === entry.entityId)
+      if (payment) await removePayment(payment)
+      return
+    }
+    if (entry.entityType === 'expense') {
+      const expense = data.expenses.find((item) => item.id === entry.entityId)
+      if (expense) await removeExpense(expense)
+      return
+    }
+    const transaction = data.receivableTransactions.find((item) => item.id === entry.entityId)
+    if (transaction) await removeReceivableTransaction(transaction)
   }
 
   const openJournalEdit = (entry: CashJournalEntry) => {
@@ -821,7 +844,7 @@ function App() {
             <article className="cash-out"><span>Total kas keluar</span><strong>{rupiah.format(cashJournal.totalCashOut)}</strong></article>
             <article className="closing"><span>Saldo akhir berjalan</span><strong>{rupiah.format(cashJournal.closingBalance)}</strong><small>{cashJournal.closingBalance === cash.cashBalance ? '✓ Sesuai saldo Ringkasan' : '⚠ Perlu diperiksa'}</small></article>
           </section>
-          <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan tetap mengikuti seluruh transaksi, termasuk saat hasil pencarian sedang difilter.</p></div><span className="journal-order-badge"><CalendarDays size={14} />Terlama → terbaru</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi yang sesuai pencarian.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
+          <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan tetap mengikuti seluruh transaksi, termasuk saat hasil pencarian sedang difilter.</p></div><span className="journal-order-badge"><CalendarDays size={14} />Terlama → terbaru</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><div className="journal-row-actions"><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button><button className="icon-button danger" onClick={() => void removeJournalEntry(entry)} title="Hapus catatan jurnal"><Trash2 size={15} /></button></div></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi yang sesuai pencarian.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
         </>}
 
         {adminView === 'houses' && <>
