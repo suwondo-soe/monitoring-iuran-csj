@@ -91,10 +91,10 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   const { data: sessionData } = await client.auth.getSession()
   const publicPaymentFields = [
     'id', 'house_id', 'period_month', 'payment_date', 'mandatory_amount',
-    'arrears_amount', 'extra_amount', 'extra_type',
+    'arrears_amount', 'extra_amount', 'extra_type', 'opening_arrears_item_id',
   ].join(',')
   const paymentFields = sessionData.session
-    ? `${publicPaymentFields},payment_method,notes,opening_arrears_item_id`
+    ? `${publicPaymentFields},payment_method,notes`
     : publicPaymentFields
   const [housesResult, tariffsResult, paymentsResult, expensesResult, settingsResult] =
     await Promise.all([
@@ -110,14 +110,24 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   if (error) throw error
 
   let houseOccupancies: HouseOccupancy[] = []
-  let openingArrearsItems: OpeningArrearsItem[] = []
+  const publicArrearsFields = 'id,house_id,debtor_name,debtor_role,cutoff_date,original_amount'
+  const arrearsResult = await client.from('opening_arrears_items')
+    .select(sessionData.session ? '*' : publicArrearsFields)
+    .order('cutoff_date', { ascending: false })
+  if (arrearsResult.error) throw arrearsResult.error
+  const openingArrearsItems: OpeningArrearsItem[] = (arrearsResult.data as unknown as OpeningArrearsRow[]).map((row) => ({
+    id: row.id,
+    houseId: row.house_id,
+    occupancyId: row.occupancy_id ?? null,
+    debtorName: row.debtor_name,
+    debtorRole: row.debtor_role,
+    cutoffDate: row.cutoff_date,
+    originalAmount: Number(row.original_amount),
+    notes: row.notes ?? '',
+  }))
   if (sessionData.session) {
-    const [occupanciesResult, arrearsResult] = await Promise.all([
-      client.from('house_occupancies').select('*').order('start_date', { ascending: false }),
-      client.from('opening_arrears_items').select('*').order('cutoff_date', { ascending: false }),
-    ])
-    const adminError = occupanciesResult.error ?? arrearsResult.error
-    if (adminError) throw adminError
+    const occupanciesResult = await client.from('house_occupancies').select('*').order('start_date', { ascending: false })
+    if (occupanciesResult.error) throw occupanciesResult.error
     houseOccupancies = (occupanciesResult.data as OccupancyRow[]).map((row) => ({
       id: row.id,
       houseId: row.house_id,
@@ -125,16 +135,6 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
       occupantRole: row.occupant_role,
       startDate: row.start_date,
       endDate: row.end_date ?? '',
-      notes: row.notes ?? '',
-    }))
-    openingArrearsItems = (arrearsResult.data as OpeningArrearsRow[]).map((row) => ({
-      id: row.id,
-      houseId: row.house_id,
-      occupancyId: row.occupancy_id,
-      debtorName: row.debtor_name,
-      debtorRole: row.debtor_role,
-      cutoffDate: row.cutoff_date,
-      originalAmount: Number(row.original_amount),
       notes: row.notes ?? '',
     }))
   }

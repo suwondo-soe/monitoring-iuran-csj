@@ -269,6 +269,11 @@ function App() {
     item.houseId !== null && selected.houseIds.includes(item.houseId) && item.outstanding > 0,
   )
   const totalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.outstanding, 0)
+  const publicOpeningArrears = [...openingArrearsBalances]
+    .filter((item) => item.outstanding > 0)
+    .sort((a, b) => b.outstanding - a.outstanding || a.debtorName.localeCompare(b.debtorName))
+  const originalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.originalAmount, 0)
+  const settledTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.settled, 0)
   const otherFunds = useMemo(() => {
     const categoryBalances = new Map(otherFundCategories.map((category) => [category, 0]))
     const accountBalances = new Map<string, Map<string, number>>()
@@ -892,6 +897,7 @@ function App() {
         <button className={publicView === 'dues' ? 'active' : ''} onClick={() => setPublicView('dues')}><ReceiptText size={18} />Status Iuran Wajib</button>
         <button className={publicView === 'other-funds' ? 'active' : ''} onClick={() => setPublicView('other-funds')}><PiggyBank size={18} />Penerimaan Lain-Lain</button>
         <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Laporan Posisi Keuangan</button>
+        <button className={publicView === 'opening-arrears' ? 'active' : ''} onClick={() => setPublicView('opening-arrears')}><CircleAlert size={18} />Tunggakan s.d. 31 Des 2025</button>
       </nav>
 
       {publicView === 'overview' && <div className="page-stack">
@@ -958,14 +964,31 @@ function App() {
           </section>
         </div>
       </div>}
+
+      {publicView === 'opening-arrears' && <div className="page-stack opening-arrears-public-page">
+        <section className="arrears-public-hero">
+          <div><span>Posisi historis</span><h2>Tunggakan Outstanding s.d. 31 Desember 2025</h2><p>Rincian kewajiban lama berdasarkan pihak yang bertanggung jawab. Pembayaran tunggakan akan langsung mengurangi saldo outstanding debitur terkait.</p></div>
+          <div><span>Total outstanding</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong><small>{publicOpeningArrears.length} pihak masih memiliki saldo</small></div>
+        </section>
+        <section className="arrears-public-summary">
+          <article><span>Nilai awal tercatat</span><strong>{rupiah.format(originalTrackedOpeningArrears)}</strong></article>
+          <article><span>Sudah dibayar</span><strong>{rupiah.format(settledTrackedOpeningArrears)}</strong></article>
+          <article className="outstanding"><span>Sisa outstanding</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></article>
+        </section>
+        <section className="panel arrears-public-panel">
+          <div className="panel-title"><div><span>Daftar debitur</span><h3>Rincian Tunggakan Lama</h3><p>Urutan berdasarkan nilai outstanding terbesar. Nomor rumah lama ditampilkan jika sudah diketahui.</p></div></div>
+          <div className="table-wrap"><table className="public-arrears-table"><thead><tr><th>Rumah</th><th>Nama yang bertanggung jawab</th><th>Status</th><th>Nilai awal</th><th>Sudah dibayar</th><th>Outstanding</th></tr></thead><tbody>{publicOpeningArrears.length ? publicOpeningArrears.map((item) => <tr key={item.id}><td>{item.houseId ? <strong>{data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}`}</strong> : <span className="unlinked-label">Rumah lama belum diketahui</span>}</td><td><strong>{item.debtorName}</strong></td><td>{arrearsDebtorRoleLabel[item.debtorRole]}</td><td>{rupiah.format(item.originalAmount)}</td><td>{item.settled > 0 ? rupiah.format(item.settled) : '—'}</td><td><strong className="outstanding-amount">{rupiah.format(item.outstanding)}</strong></td></tr>) : <tr><td colSpan={6}><div className="empty-state">Tidak ada tunggakan outstanding sampai 31 Desember 2025.</div></td></tr>}</tbody><tfoot><tr><td colSpan={3}>Total</td><td>{rupiah.format(originalTrackedOpeningArrears)}</td><td>{rupiah.format(settledTrackedOpeningArrears)}</td><td><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></td></tr></tfoot></table></div>
+        </section>
+      </div>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
+        <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
         <button className={adminView === 'payments' ? 'active' : ''} onClick={() => { setAdminView('payments'); setPaymentForm((form) => ({ ...form, receiptKind: 'dues' })) }}><ReceiptText size={18} />Penerimaan Iuran Wajib</button>
         <button className={adminView === 'other-funds' ? 'active' : ''} onClick={() => { setAdminView('other-funds'); setPaymentForm((form) => ({ ...form, receiptKind: 'other' })) }}><PiggyBank size={18} />Penerimaan Lain-Lain</button>
         <button className={adminView === 'expenses' ? 'active' : ''} onClick={() => setAdminView('expenses')}><WalletCards size={18} />Pengeluaran</button>
         <button className={adminView === 'receivables' ? 'active' : ''} onClick={() => setAdminView('receivables')}><TrendingUp size={18} />Piutang</button>
         <button className={adminView === 'journal' ? 'active' : ''} onClick={() => setAdminView('journal')}><BookOpen size={18} />Jurnal Kas</button>
-        <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
+        <button className={adminView === 'opening-arrears' ? 'active' : ''} onClick={() => setAdminView('opening-arrears')}><CircleAlert size={18} />Tunggakan s.d. 2025</button>
         <button className={adminView === 'settings' ? 'active' : ''} onClick={() => setAdminView('settings')}><Settings2 size={18} />Pengaturan</button>
       </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
       <div className="admin-content">
@@ -1052,10 +1075,10 @@ function App() {
           <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan tetap mengikuti seluruh transaksi, termasuk saat hasil pencarian sedang difilter.</p></div><span className="journal-order-badge"><CalendarDays size={14} />Terlama → terbaru</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><div className="journal-row-actions"><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button><button className="icon-button danger" onClick={() => void removeJournalEntry(entry)} title="Hapus catatan jurnal"><Trash2 size={15} /></button></div></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi yang sesuai pencarian.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
         </>}
 
-        {adminView === 'houses' && <>
-          <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola penghuni serta tagihan yang masih terutang sampai 31 Desember 2025.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
+        {adminView === 'opening-arrears' && <>
+          <div className="admin-heading"><div><span>Kontrol tunggakan historis</span><h2>Tunggakan s.d. 31 Desember 2025</h2><p>Kelola saldo per akun dan pihak yang bertanggung jawab secara terpisah dari data penghuni saat ini.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
           <section className="panel opening-arrears-panel">
-            <div className="panel-title"><div><span>Kontrol saldo per akun</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Kosongkan kolom untuk menyimpan Rp0. Rincian nama pihak yang berutang dikelola pada bagian berikutnya.</p></div></div>
+            <div className="panel-title"><div><span>Kontrol saldo per akun</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Kosongkan kolom untuk menyimpan Rp0. Nilai tidak boleh lebih kecil dari rincian debitur yang sudah dialokasikan.</p></div></div>
             <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" placeholder="0" value={openingArrearsDrafts[account.id] ?? (account.openingArrears === 0 ? '' : String(account.openingArrears))} onChange={(event) => setOpeningArrearsDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
           </section>
           <section className="panel arrears-detail-panel">
@@ -1071,6 +1094,10 @@ function App() {
             </form>
             <div className="table-wrap"><table className="trace-table"><thead><tr><th>Rumah</th><th>Debitur</th><th>Status</th><th>Posisi</th><th>Nilai awal</th><th>Terbayar</th><th>Sisa</th><th>Catatan</th><th /></tr></thead><tbody>{openingArrearsBalances.length ? openingArrearsBalances.map((item) => <tr key={item.id}><td>{item.houseId ? data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}` : <span className="unlinked-label">Belum diketahui</span>}</td><td><strong>{item.debtorName}</strong></td><td>{arrearsDebtorRoleLabel[item.debtorRole]}</td><td>{item.cutoffDate}</td><td>{rupiah.format(item.originalAmount)}</td><td>{rupiah.format(item.settled)}</td><td><strong>{rupiah.format(item.outstanding)}</strong></td><td>{item.notes || '—'}</td><td><button className="icon-button danger" onClick={() => void removeOpeningArrearsItem(item)} title="Hapus rincian tunggakan" type="button"><Trash2 size={15} /></button></td></tr>) : <tr><td colSpan={9}><div className="empty-state">Belum ada rincian debitur tunggakan awal.</div></td></tr>}</tbody></table></div>
           </section>
+        </>}
+
+        {adminView === 'houses' && <>
+          <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola data rumah, penghuni aktif, serta riwayat perubahan penyewa.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
           <section className="panel house-editor"><div className="panel-title"><div><span>Data penghuni saat ini</span><h3>Rumah dan Penghuni Aktif</h3><p>Ketika nama atau status penghuni berubah, riwayat aktif sebelumnya ditutup otomatis pada tanggal penyimpanan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai sewa</th><th>Mulai tagihan</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="date" disabled={house.residenceStatus !== 'rented'} value={house.rentalStartDate} onChange={(e) => patchHouse(house.id, { rentalStartDate: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><button className="small-action" type="button" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
           <section className="panel occupancy-history-panel">
             <div className="panel-title"><div><span>Jejak perubahan</span><h3>Riwayat Penghuni</h3><p>Gunakan formulir ini untuk memasukkan periode lama. Penghuni aktif dikelola melalui tabel rumah di atas.</p></div></div>

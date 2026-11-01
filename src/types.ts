@@ -1,5 +1,5 @@
-export type PublicView = 'overview' | 'dues' | 'other-funds' | 'expenses'
-export type AdminView = 'payments' | 'other-funds' | 'expenses' | 'receivables' | 'journal' | 'houses' | 'settings'
+export type PublicView = 'overview' | 'dues' | 'other-funds' | 'expenses' | 'opening-arrears'
+export type AdminView = 'payments' | 'other-funds' | 'expenses' | 'receivables' | 'journal' | 'opening-arrears' | 'houses' | 'settings'
 export type ResidenceStatus = 'owner_occupied' | 'rented' | 'empty'
 
 export type House = {
