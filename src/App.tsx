@@ -86,8 +86,12 @@ const otherReceiptTypes = [
   'Iuran Ramadhan+Idul Fitri', 'Lainnya',
 ]
 const otherFundCategories = otherReceiptTypes.filter((type) => type !== 'Denda')
-const normalizeOtherFundCategory = (value: string) =>
-  otherFundCategories.includes(value) ? value : 'Lainnya'
+const normalizeReceiptType = (value: string) =>
+  otherReceiptTypes.find((type) => type.toLowerCase() === value.trim().toLowerCase()) ?? 'Lainnya'
+const normalizeOtherFundCategory = (value: string) => {
+  const category = normalizeReceiptType(value)
+  return category === 'Denda' ? 'Lainnya' : category
+}
 const legacyExpenseCategory: Record<string, string> = {
   Security: 'Beban', Cleaning: 'Beban', Maintenance: 'Beban', Administration: 'Beban', Other: 'Lainnya',
 }
@@ -144,6 +148,28 @@ function StatusGrid({ accounts, selectedId, onSelect }: {
   </div>
 }
 
+type OtherFundAccountRow = {
+  account: BillingAccount
+  balances: Map<string, number>
+  total: number
+}
+
+function OtherFundAccountGrid({ rows, selectedId, onSelect }: {
+  rows: OtherFundAccountRow[]
+  selectedId: string
+  onSelect: (account: BillingAccount) => void
+}) {
+  return <div className="other-fund-account-grid">
+    {rows.map(({ account, total }) => <button
+      className={`other-fund-account ${selectedId === account.id ? 'selected' : ''}`}
+      key={account.id} onClick={() => onSelect(account)} type="button"
+      aria-label={`${account.code}, saldo ${rupiah.format(total)}`}
+    >
+      <span>{account.code}</span><strong>{rupiah.format(total)}</strong><small>{account.residentName}</small>
+    </button>)}
+  </div>
+}
+
 function App() {
   const [data, setData] = useState<LedgerData>(seedLedger)
   const [activeMonth] = useState(currentMonth < '2026-01' ? '2026-01' : currentMonth)
@@ -157,6 +183,8 @@ function App() {
   const [error, setError] = useState('')
   const [showLogin, setShowLogin] = useState(false)
   const [showRecap, setShowRecap] = useState(false)
+  const [showOtherFundDetail, setShowOtherFundDetail] = useState(false)
+  const [selectedOtherFundAccountId, setSelectedOtherFundAccountId] = useState('account-01')
   const [recapYear, setRecapYear] = useState(Math.min(2028, Math.max(2026, now.getFullYear())))
   const [reportYear, setReportYear] = useState(Math.max(2026, now.getFullYear()))
   const [maxReportYear, setMaxReportYear] = useState(Math.max(2028, now.getFullYear()))
@@ -217,33 +245,40 @@ function App() {
   const otherFunds = useMemo(() => {
     const categoryBalances = new Map(otherFundCategories.map((category) => [category, 0]))
     const accountBalances = new Map<string, Map<string, number>>()
-    const transactions = data.payments
-      .filter((payment) => payment.paymentDate <= today && payment.extraAmount > 0 && payment.extraType.trim().toLowerCase() !== 'denda')
+    const allTransactions = data.payments
+      .filter((payment) => payment.paymentDate <= today && payment.extraAmount > 0)
       .map((payment) => {
         const account = accounts.find((item) => item.houseIds.includes(payment.houseId))
-        const category = normalizeOtherFundCategory(payment.extraType)
-        categoryBalances.set(category, (categoryBalances.get(category) ?? 0) + payment.extraAmount)
-        if (account) {
-          const balances = accountBalances.get(account.id) ?? new Map(otherFundCategories.map((item) => [item, 0]))
-          balances.set(category, (balances.get(category) ?? 0) + payment.extraAmount)
-          accountBalances.set(account.id, balances)
-        }
+        const category = normalizeReceiptType(payment.extraType)
         return { payment, account, category }
       })
       .sort((a, b) => b.payment.paymentDate.localeCompare(a.payment.paymentDate) || b.payment.month.localeCompare(a.payment.month))
+    const transactions = allTransactions.filter((item) => item.category !== 'Denda')
+    transactions.forEach(({ payment, account, category: rawCategory }) => {
+      const category = normalizeOtherFundCategory(rawCategory)
+      categoryBalances.set(category, (categoryBalances.get(category) ?? 0) + payment.extraAmount)
+      if (account) {
+        const balances = accountBalances.get(account.id) ?? new Map(otherFundCategories.map((item) => [item, 0]))
+        balances.set(category, (balances.get(category) ?? 0) + payment.extraAmount)
+        accountBalances.set(account.id, balances)
+      }
+    })
     const categories = otherFundCategories.map((category) => ({ category, balance: categoryBalances.get(category) ?? 0 }))
-    const accountsWithBalances = accounts.map((account) => {
+    const accountsWithBalances: OtherFundAccountRow[] = accounts.map((account) => {
       const balances = accountBalances.get(account.id) ?? new Map<string, number>()
       const total = otherFundCategories.reduce((sum, category) => sum + (balances.get(category) ?? 0), 0)
       return { account, balances, total }
-    }).filter((item) => item.total > 0)
+    })
     return {
       categories,
       accounts: accountsWithBalances,
       transactions,
+      allTransactions,
       total: categories.reduce((sum, item) => sum + item.balance, 0),
     }
   }, [accounts, data.payments])
+  const selectedOtherFundAccount = otherFunds.accounts.find((item) => item.account.id === selectedOtherFundAccountId) ?? otherFunds.accounts[0]
+  const selectedOtherFundTransactions = otherFunds.transactions.filter((item) => item.account?.id === selectedOtherFundAccount?.account.id)
   const cash = useMemo(() => cashSummary(data, activeMonth, today), [data, activeMonth])
   const activeTariff = useMemo(() => tariffForMonth(data.tariffs, activeMonth), [data.tariffs, activeMonth])
   const expected = statements.reduce((sum, account) => sum + account.monthlyDue, 0)
@@ -454,6 +489,16 @@ function App() {
     setSelectedAccountId(account.id)
     setRecapYear(Math.min(2028, Math.max(2026, now.getFullYear())))
     setShowRecap(true)
+  }
+
+  const selectOtherReceiptAccount = (account: BillingAccount) => {
+    setSelectedAccountId(account.id)
+    setPaymentForm((form) => ({ ...form, receiptKind: 'other' }))
+  }
+
+  const openPublicOtherFundDetail = (account: BillingAccount) => {
+    setSelectedOtherFundAccountId(account.id)
+    setShowOtherFundDetail(true)
   }
 
   const flash = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
@@ -728,6 +773,7 @@ function App() {
   }
 
   const selectedPayments = data.payments.filter((payment) => selected?.houseIds.includes(payment.houseId)).sort((a, b) => b.paymentDate.localeCompare(a.paymentDate))
+  const selectedDuesPayments = selectedPayments.filter((payment) => payment.mandatoryAmount + payment.arrearsAmount > 0)
   const paymentPeriodTotal = paymentForm.periods.reduce((sum, period) => sum + Number(period.mandatory || 0), 0)
 
   if (loading) return <main className="loading-screen"><div className="brand-mark">CSJ</div><p>Menyiapkan laporan kas warga…</p></main>
@@ -747,6 +793,7 @@ function App() {
       <nav className="public-nav" aria-label="Navigasi warga">
         <button className={publicView === 'overview' ? 'active' : ''} onClick={() => setPublicView('overview')}><Home size={18} />Ringkasan</button>
         <button className={publicView === 'dues' ? 'active' : ''} onClick={() => setPublicView('dues')}><ReceiptText size={18} />Status Iuran Wajib</button>
+        <button className={publicView === 'other-funds' ? 'active' : ''} onClick={() => setPublicView('other-funds')}><PiggyBank size={18} />Penerimaan Lain-Lain</button>
         <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Laporan Posisi Keuangan</button>
       </nav>
 
@@ -780,17 +827,19 @@ function App() {
         </section>
       </div>}
 
-      {publicView === 'dues' && <div className="page-stack">
-        <section className="panel page-panel">
+      {publicView === 'dues' && <section className="panel page-panel">
           <div className="panel-title"><div><span>Status {monthLabel(activeMonth)}</span><h2>Status Pembayaran Iuran Wajib</h2><p>CSJ02 dan CSJ03 tercatat sebagai satu akun pembayaran.</p></div><div className="legend"><span><i className="dot paid" />Lunas</span><span><i className="dot due" />Belum lunas</span></div></div>
           <StatusGrid accounts={statements} selectedId={selected.id} onSelect={openPublicRecap} />
           <div className="selected-summary large"><div><span>{selected.code}</span><h3>{selected.residentName}</h3><small>{selected.houseIds.length === 2 ? 'Akun pembayaran gabungan' : residenceLabel[selected.residenceStatus]}</small></div><dl><div><dt>Tagihan periode</dt><dd>{rupiah.format(selected.monthlyDue)}</dd></div><div><dt>Terbayar periode</dt><dd>{rupiah.format(selected.paidThisPeriod)}</dd></div><div><dt>Tunggakan sebelumnya</dt><dd>{rupiah.format(selected.arrearsBalance)}</dd></div><div><dt>Total kewajiban</dt><dd>{rupiah.format(selected.totalOutstanding)}</dd></div></dl><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
           <div className="table-wrap"><table><thead><tr><th>Akun</th><th>Nama</th><th>Tagihan</th><th>Terbayar</th><th>Tunggakan</th><th>Status</th></tr></thead><tbody>{statements.map((item) => <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.residentName}</td><td>{rupiah.format(item.monthlyDue)}</td><td>{rupiah.format(item.paidThisPeriod)}</td><td>{rupiah.format(item.arrearsBalance)}</td><td><span className={`mini-status ${item.isPaid ? 'paid' : 'due'}`}>{item.isPaid ? 'Lunas' : 'Belum'}</span></td></tr>)}</tbody></table></div>
-        </section>
+      </section>}
+
+      {publicView === 'other-funds' && <div className="page-stack">
         <section className="panel other-funds-panel">
-          <div className="panel-title"><div><span>Dana titipan warga</span><h2>Saldo Penerimaan Lain-Lain</h2><p>Akumulasi dana per kegiatan sampai {pageOpenedLabel}. Denda tidak termasuk karena merupakan tambahan penerimaan kas.</p></div><div className="other-funds-total"><span>Total saldo dana</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="panel-title"><div><span>Dana titipan warga</span><h2>Penerimaan Lain-Lain per Rumah</h2><p>Saldo per akun sampai {pageOpenedLabel}. Klik rumah untuk melihat rincian pembayarannya. Denda tidak termasuk dalam saldo.</p></div><div className="other-funds-total"><span>Total saldo dana</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
           <div className="other-fund-summary">{otherFunds.categories.map((item) => <article className="other-fund-card" key={item.category}><div className="fund-icon"><PiggyBank size={20} /></div><span>{item.category}</span><strong>{rupiah.format(item.balance)}</strong></article>)}</div>
         </section>
+        <section className="panel other-fund-houses-panel"><div className="panel-title"><div><span>35 akun warga</span><h3>Saldo per Rumah</h3><p>Pilih akun untuk membuka detail penerimaan per jenis dan periode.</p></div></div><OtherFundAccountGrid rows={otherFunds.accounts} selectedId={selectedOtherFundAccountId} onSelect={openPublicOtherFundDetail} /></section>
       </div>}
 
       {publicView === 'expenses' && <div className="page-stack financial-page">
@@ -814,8 +863,8 @@ function App() {
       </div>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
-        <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Penerimaan</button>
-        <button className={adminView === 'other-funds' ? 'active' : ''} onClick={() => setAdminView('other-funds')}><PiggyBank size={18} />Saldo Dana</button>
+        <button className={adminView === 'payments' ? 'active' : ''} onClick={() => { setAdminView('payments'); setPaymentForm((form) => ({ ...form, receiptKind: 'dues' })) }}><ReceiptText size={18} />Penerimaan Iuran Wajib</button>
+        <button className={adminView === 'other-funds' ? 'active' : ''} onClick={() => { setAdminView('other-funds'); setPaymentForm((form) => ({ ...form, receiptKind: 'other' })) }}><PiggyBank size={18} />Penerimaan Lain-Lain</button>
         <button className={adminView === 'expenses' ? 'active' : ''} onClick={() => setAdminView('expenses')}><WalletCards size={18} />Pengeluaran</button>
         <button className={adminView === 'receivables' ? 'active' : ''} onClick={() => setAdminView('receivables')}><TrendingUp size={18} />Piutang</button>
         <button className={adminView === 'journal' ? 'active' : ''} onClick={() => setAdminView('journal')}><BookOpen size={18} />Jurnal Kas</button>
@@ -824,44 +873,52 @@ function App() {
       </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
       <div className="admin-content">
         {adminView === 'payments' && <>
-          <div className="admin-heading"><div><span>Pencatatan penerimaan</span><h2>Penerimaan Kas dari Warga</h2><p>Periode berjalan otomatis {monthLabel(activeMonth)}. Pilih akun, periksa kewajiban, lalu catat penerimaan kasnya.</p></div></div>
+          <div className="admin-heading"><div><span>Pencatatan penerimaan</span><h2>Penerimaan Iuran Wajib</h2><p>Periode berjalan otomatis {monthLabel(activeMonth)}. Pilih akun, periksa kewajiban, lalu catat penerimaan iurannya.</p></div></div>
           <div className="admin-two-column"><section className="panel account-picker"><div className="panel-title"><div><span>35 akun pembayar iuran</span><h3>Pilih akun</h3></div></div><StatusGrid accounts={statements} selectedId={selected.id} onSelect={selectAccount} /></section>
           <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><Home size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div><span className={`status-badge ${selected.isPaid ? 'paid' : 'due'}`}>{selected.isPaid ? 'Lunas' : 'Belum'}</span></div>
-            <span className="receipt-kind-label">Jenis penerimaan</span><div className="receipt-kind-switch"><button className={paymentForm.receiptKind === 'dues' ? 'active' : ''} onClick={() => setPaymentForm({ ...paymentForm, receiptKind: 'dues' })} type="button"><ReceiptText size={17} /><span>Penerimaan Iuran<small>Iuran bulanan dan tunggakan</small></span></button><button className={paymentForm.receiptKind === 'other' ? 'active' : ''} onClick={() => setPaymentForm({ ...paymentForm, receiptKind: 'other' })} type="button"><Banknote size={17} /><span>Penerimaan Lain-Lain<small>Denda, program, dan lainnya</small></span></button></div>
-            {paymentForm.receiptKind === 'dues' && <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>}
+            <div className="obligation-strip"><div><span>Tagihan berjalan</span><strong>{rupiah.format(selected.currentBalance)}</strong></div><div><span>Tunggakan</span><strong>{rupiah.format(selected.arrearsBalance)}</strong></div></div>
             <form className="form-grid" onSubmit={savePayment}>
-              <label>Tanggal penerimaan<input type="date" required value={paymentForm.paymentDate} onChange={(e) => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} /></label>
-              <label>Metode<select value={paymentForm.method} onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
-              {paymentForm.receiptKind === 'dues' ? <><div className="payment-periods wide">
+              <label>Tanggal penerimaan<input type="date" required value={paymentForm.paymentDate} onChange={(event) => setPaymentForm({ ...paymentForm, paymentDate: event.target.value })} /></label>
+              <label>Metode<select value={paymentForm.method} onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
+              <div className="payment-periods wide">
                 <div className="payment-period-heading"><div><strong>Periode pembayaran</strong><span>Pilih bulan dan tahun. Tambahkan baris jika satu transaksi membayar beberapa bulan.</span></div><button className="secondary-action" type="button" onClick={addPaymentPeriod}><Plus size={16} />Tambah periode</button></div>
                 {paymentForm.periods.map((period, index) => <div className="payment-period-row" key={`${index}-${period.month}`}>
-                  <label>Bulan & tahun<input type="month" min="2026-01" required value={period.month} onChange={(e) => updatePaymentPeriod(index, e.target.value)} /></label>
-                  <label>Iuran periode<input type="number" min="0" step="1000" value={period.mandatory} onChange={(e) => setPaymentForm((form) => ({ ...form, periods: form.periods.map((item, periodIndex) => periodIndex === index ? { ...item, mandatory: e.target.value } : item) }))} /></label>
+                  <label>Bulan & tahun<input type="month" min="2026-01" required value={period.month} onChange={(event) => updatePaymentPeriod(index, event.target.value)} /></label>
+                  <label>Iuran periode<input type="number" min="0" step="1000" value={period.mandatory} onChange={(event) => setPaymentForm((form) => ({ ...form, periods: form.periods.map((item, periodIndex) => periodIndex === index ? { ...item, mandatory: event.target.value } : item) }))} /></label>
                   <button aria-label={`Hapus periode ${monthLabel(period.month)}`} className="icon-button danger" disabled={paymentForm.periods.length === 1} onClick={() => removePaymentPeriod(index)} title="Hapus periode" type="button"><Trash2 size={16} /></button>
                 </div>)}
                 <div className="payment-period-total"><span>Total iuran periode terpilih</span><strong>{rupiah.format(paymentPeriodTotal)}</strong></div>
               </div>
-              <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(e) => setPaymentForm({ ...paymentForm, arrears: e.target.value })} /></label>
-              </> : <>
-                <label>Periode penerimaan<input type="month" min="2026-01" required value={paymentForm.otherPeriod} onChange={(e) => setPaymentForm({ ...paymentForm, otherPeriod: e.target.value })} /></label>
-                <label>Jenis penerimaan lain-lain<select value={paymentForm.extraType} onChange={(e) => setPaymentForm({ ...paymentForm, extraType: e.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
-                <label className="wide">Nilai penerimaan<input type="number" min="0" step="1000" required value={paymentForm.otherAmount} onChange={(e) => setPaymentForm({ ...paymentForm, otherAmount: e.target.value })} /></label>
-              </>}
-              <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} /></label>
-              <button className="primary-action wide" type="submit"><Plus size={18} />{paymentForm.receiptKind === 'dues' ? `Simpan penerimaan iuran${paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}` : 'Simpan penerimaan lain-lain'}</button>
+              <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(event) => setPaymentForm({ ...paymentForm, arrears: event.target.value })} /></label>
+              <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })} /></label>
+              <button className="primary-action wide" type="submit"><Plus size={18} />Simpan penerimaan iuran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
             </form>
           </section></div>
-          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat penerimaan akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Jenis penerimaan</th><th>Detail</th><th>Nilai</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => { const duesAmount = payment.mandatoryAmount + payment.arrearsAmount; const kind = duesAmount > 0 && payment.extraAmount > 0 ? 'Gabungan (data lama)' : payment.extraAmount > 0 ? 'Penerimaan Lain-Lain' : 'Penerimaan Iuran'; return <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{kind}</td><td>{payment.extraAmount > 0 ? payment.extraType : payment.arrearsAmount > 0 ? 'Iuran + tunggakan' : 'Iuran bulanan'}</td><td>{rupiah.format(duesAmount + payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus penerimaan"><Trash2 size={16} /></button></td></tr> }) : <tr><td colSpan={7}><div className="empty-state">Belum ada penerimaan untuk akun ini.</div></td></tr>}</tbody></table></div></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat penerimaan iuran wajib</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Detail</th><th>Nilai</th><th>Metode</th><th /></tr></thead><tbody>{selectedDuesPayments.length ? selectedDuesPayments.map((payment) => { const duesAmount = payment.mandatoryAmount + payment.arrearsAmount; return <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{payment.arrearsAmount > 0 ? 'Iuran + tunggakan' : 'Iuran bulanan'}</td><td>{rupiah.format(duesAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus penerimaan"><Trash2 size={16} /></button></td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Belum ada penerimaan iuran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
         </>}
 
         {adminView === 'other-funds' && <>
-          <div className="admin-heading"><div><span>Kontrol dana titipan</span><h2>Saldo Penerimaan Lain-Lain</h2><p>Pantau dana yang disimpan untuk kegiatan tertentu. Denda tidak termasuk karena dicatat sebagai tambahan penerimaan kas biasa.</p></div><div className="admin-stat"><span>Total saldo dana</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="admin-heading"><div><span>Pencatatan dan kontrol dana</span><h2>Penerimaan Lain-Lain</h2><p>Catat penerimaan program, sumbangan, iuran hari raya, denda, dan penerimaan lainnya secara terpisah dari iuran wajib.</p></div><div className="admin-stat"><span>Total saldo dana titipan</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="admin-two-column other-receipt-entry">
+            <section className="panel account-picker"><div className="panel-title"><div><span>35 akun warga</span><h3>Pilih akun</h3><p>Saldo yang tampil tidak termasuk denda.</p></div></div><OtherFundAccountGrid rows={otherFunds.accounts} selectedId={selected.id} onSelect={selectOtherReceiptAccount} /></section>
+            <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><PiggyBank size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div></div>
+              <form className="form-grid" onSubmit={savePayment}>
+                <label>Tanggal penerimaan<input type="date" required value={paymentForm.paymentDate} onChange={(event) => setPaymentForm({ ...paymentForm, paymentDate: event.target.value })} /></label>
+                <label>Metode<select value={paymentForm.method} onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
+                <label>Periode penerimaan<input type="month" min="2026-01" required value={paymentForm.otherPeriod} onChange={(event) => setPaymentForm({ ...paymentForm, otherPeriod: event.target.value })} /></label>
+                <label>Jenis penerimaan<select value={paymentForm.extraType} onChange={(event) => setPaymentForm({ ...paymentForm, extraType: event.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
+                <label className="wide">Nilai penerimaan<input type="number" min="0" step="1000" required value={paymentForm.otherAmount} onChange={(event) => setPaymentForm({ ...paymentForm, otherAmount: event.target.value })} /></label>
+                <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })} /></label>
+                <button className="primary-action wide" type="submit"><Plus size={18} />Simpan penerimaan lain-lain</button>
+              </form>
+            </section>
+          </div>
           <section className="other-fund-summary admin-fund-summary">{otherFunds.categories.map((item) => <article className="other-fund-card" key={item.category}><div className="fund-icon"><PiggyBank size={20} /></div><span>{item.category}</span><strong>{rupiah.format(item.balance)}</strong></article>)}</section>
           <section className="panel fund-monitor-panel">
             <div className="panel-title"><div><span>Saldo per akun</span><h3>Rincian Dana Warga</h3><p>Nilai merupakan akumulasi penerimaan untuk masing-masing jenis dana.</p></div></div>
             <div className="table-wrap"><table className="other-fund-table"><thead><tr><th>Akun</th><th>Nama</th>{otherFundCategories.map((category) => <th key={category}>{category}</th>)}<th>Total</th></tr></thead><tbody>{otherFunds.accounts.length ? otherFunds.accounts.map(({ account, balances, total }) => <tr key={account.id}><td><strong>{account.code}</strong></td><td>{account.residentName}</td>{otherFundCategories.map((category) => { const balance = balances.get(category) ?? 0; return <td key={category}>{balance > 0 ? rupiah.format(balance) : '—'}</td> })}<td><strong>{rupiah.format(total)}</strong></td></tr>) : <tr><td colSpan={otherFundCategories.length + 3}><div className="empty-state">Belum ada saldo penerimaan lain-lain selain denda.</div></td></tr>}</tbody><tfoot><tr><td colSpan={2}>Total per jenis dana</td>{otherFunds.categories.map((item) => <td key={item.category}>{rupiah.format(item.balance)}</td>)}<td>{rupiah.format(otherFunds.total)}</td></tr></tfoot></table></div>
           </section>
-          <section className="panel history-panel"><div className="panel-title"><div><span>Mutasi masuk</span><h3>Riwayat Penerimaan Dana</h3><p>Gunakan tab Penerimaan atau Jurnal Kas untuk mengubah catatan asal.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Akun</th><th>Jenis dana</th><th>Nilai</th><th>Metode</th><th>Catatan</th></tr></thead><tbody>{otherFunds.transactions.length ? otherFunds.transactions.map(({ payment, account, category }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td><strong>{account?.code ?? `CSJ ${String(payment.houseId).padStart(2, '0')}`}</strong></td><td>{category}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td><td>{payment.method || '—'}</td><td>{payment.notes || '—'}</td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada penerimaan dana lain-lain selain denda.</div></td></tr>}</tbody></table></div></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Mutasi masuk</span><h3>Riwayat Penerimaan Lain-Lain</h3><p>Denda ditampilkan dalam riwayat, tetapi tidak masuk saldo dana titipan. Gunakan Jurnal Kas untuk mengedit atau menghapus catatan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Akun</th><th>Jenis dana</th><th>Nilai</th><th>Metode</th><th>Catatan</th></tr></thead><tbody>{otherFunds.allTransactions.length ? otherFunds.allTransactions.map(({ payment, account, category }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td><strong>{account?.code ?? `CSJ ${String(payment.houseId).padStart(2, '0')}`}</strong></td><td>{category}{category === 'Denda' ? <small className="fine-label">Bukan dana titipan</small> : null}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td><td>{payment.method || '—'}</td><td>{payment.notes || '—'}</td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada penerimaan lain-lain.</div></td></tr>}</tbody></table></div></section>
         </>}
 
         {adminView === 'expenses' && <>
@@ -923,6 +980,13 @@ function App() {
         return <article className={state} key={item.month}><div className="month-status-icon">{item.isPending ? <CircleAlert size={18} /> : item.isNotApplicable || item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : item.isPartial ? <CircleAlert size={18} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isNotApplicable ? 'Belum mulai tagihan' : item.isPending ? 'Menunggu konfirmasi' : item.isPaid ? 'Lunas' : item.isPartial ? 'Dibayar sebagian' : item.isFuture ? 'Belum jatuh tempo' : 'Belum dibayar'}</span></div>{(state === 'due' || state === 'partial') && <div className="month-outstanding"><span>{state === 'partial' ? 'Sisa terutang' : 'Terutang'}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}{state === 'pending' && <div className="month-pending-note"><span>{item.pendingNotes}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>
       })}</div>
       <div className="recap-legend"><span><i className="dot paid" />Hijau: lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span><span><i className="dot partial" />Merah muda: dibayar sebagian</span><span><i className="dot pending" />Kuning: menunggu konfirmasi</span><span><i className="dot future" />Abu-abu: belum jatuh tempo</span></div>
+    </section></div>}
+
+    {showOtherFundDetail && selectedOtherFundAccount && <div className="modal-backdrop" role="presentation"><section className="recap-dialog other-fund-detail-dialog" role="dialog" aria-modal="true" aria-label={`Detail penerimaan lain-lain ${selectedOtherFundAccount.account.code}`}>
+      <button className="modal-close" onClick={() => setShowOtherFundDetail(false)} aria-label="Tutup detail"><X size={20} /></button>
+      <div className="recap-heading"><div><span className="section-kicker">Penerimaan lain-lain</span><h2>{selectedOtherFundAccount.account.code}</h2><p>{selectedOtherFundAccount.account.residentName}</p></div><div className="detail-fund-total"><span>Total saldo</span><strong>{rupiah.format(selectedOtherFundAccount.total)}</strong></div></div>
+      <div className="other-fund-summary detail-fund-summary">{otherFundCategories.map((category) => <article className="other-fund-card" key={category}><div className="fund-icon"><PiggyBank size={19} /></div><span>{category}</span><strong>{rupiah.format(selectedOtherFundAccount.balances.get(category) ?? 0)}</strong></article>)}</div>
+      <div className="detail-fund-history"><div className="panel-title"><div><span>Rincian pembayaran</span><h3>Mutasi per Periode</h3><p>Denda tidak termasuk dalam saldo dan rincian dana titipan ini.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Jenis dana</th><th>Nilai</th></tr></thead><tbody>{selectedOtherFundTransactions.length ? selectedOtherFundTransactions.map(({ payment, category }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{normalizeOtherFundCategory(category)}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td></tr>) : <tr><td colSpan={4}><div className="empty-state">Belum ada pembayaran penerimaan lain-lain untuk akun ini.</div></td></tr>}</tbody></table></div></div>
     </section></div>}
 
     {journalEdit && <div className="modal-backdrop" role="presentation"><section className="login-dialog journal-edit-dialog" role="dialog" aria-modal="true" aria-label="Edit catatan jurnal">
