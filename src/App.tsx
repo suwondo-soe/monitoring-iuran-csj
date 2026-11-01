@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  ArrowLeft, Banknote, Building2, CalendarDays, Check, CheckCircle2, CircleAlert,
-  Copy, CreditCard, Home, LogIn, LogOut, Plus, ReceiptText, Settings2, ShieldCheck,
+  ArrowLeft, Banknote, BookOpen, Building2, CalendarDays, Check, CheckCircle2, CircleAlert,
+  Copy, CreditCard, Home, LogIn, LogOut, Pencil, Plus, ReceiptText, Search, Settings2, ShieldCheck,
   Trash2, TrendingUp, Users, WalletCards, X,
 } from 'lucide-react'
 import './App.css'
@@ -14,7 +14,8 @@ import {
 import {
   createRemoteExpense, createRemotePayments, createRemoteReceivableTransaction,
   createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense, deleteRemotePayment,
-  deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteHouse, updateRemoteSettings,
+  deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
+  updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
@@ -92,6 +93,37 @@ const legacyExpenseDetail: Record<string, string> = {
   Administration: 'Beban Administrasi', Other: 'Lainnya',
 }
 
+type CashJournalEntry = {
+  id: string
+  entityId: string
+  entityType: 'payment-dues' | 'payment-other' | 'expense' | 'receivable'
+  date: string
+  source: 'Penerimaan' | 'Pengeluaran' | 'Piutang'
+  category: string
+  detail: string
+  description: string
+  cashIn: number
+  cashOut: number
+  runningBalance: number
+}
+
+type JournalEditForm = {
+  entry: CashJournalEntry
+  date: string
+  month: string
+  mandatoryAmount: string
+  arrearsAmount: string
+  extraAmount: string
+  extraType: string
+  method: string
+  category: string
+  detail: string
+  amount: string
+  debtor: string
+  transactionType: 'disbursement' | 'repayment'
+  notes: string
+}
+
 function StatusGrid({ accounts, selectedId, onSelect }: {
   accounts: ReturnType<typeof statementForAccount>[]
   selectedId: string
@@ -139,6 +171,8 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
+  const [journalQuery, setJournalQuery] = useState('')
+  const [journalEdit, setJournalEdit] = useState<JournalEditForm | null>(null)
 
   const loadData = async () => {
     setLoading(true); setError('')
@@ -273,6 +307,69 @@ function App() {
     })
     return balances
   }, [data.receivableTransactions])
+  const cashJournal = useMemo(() => {
+    const entries: Omit<CashJournalEntry, 'runningBalance'>[] = []
+    const accountCodeForHouse = (houseId: number) =>
+      accounts.find((account) => account.houseIds.includes(houseId))?.code ?? `CSJ ${String(houseId).padStart(2, '0')}`
+
+    data.payments.filter((payment) => payment.paymentDate <= today).forEach((payment) => {
+      const duesAmount = payment.mandatoryAmount + payment.arrearsAmount
+      const accountCode = accountCodeForHouse(payment.houseId)
+      const method = payment.method ? ` · ${payment.method}` : ''
+      if (duesAmount > 0) entries.push({
+        id: `${payment.id}-dues`, entityId: payment.id, entityType: 'payment-dues',
+        date: payment.paymentDate, source: 'Penerimaan',
+        category: 'Penerimaan Iuran Warga',
+        detail: payment.arrearsAmount > 0 ? 'Iuran dan tunggakan' : 'Iuran bulanan',
+        description: `${accountCode} · ${monthLabel(payment.month)}${method}${payment.notes ? ` · ${payment.notes}` : ''}`,
+        cashIn: duesAmount, cashOut: 0,
+      })
+      if (payment.extraAmount > 0) entries.push({
+        id: `${payment.id}-other`, entityId: payment.id, entityType: 'payment-other',
+        date: payment.paymentDate, source: 'Penerimaan',
+        category: 'Penerimaan Lain-Lain', detail: payment.extraType || 'Lainnya',
+        description: `${accountCode} · ${monthLabel(payment.month)}${method}${payment.notes ? ` · ${payment.notes}` : ''}`,
+        cashIn: payment.extraAmount, cashOut: 0,
+      })
+    })
+
+    data.expenses.filter((expense) => expense.date <= today).forEach((expense) => entries.push({
+      id: expense.id, entityId: expense.id, entityType: 'expense',
+      date: expense.date, source: 'Pengeluaran',
+      category: legacyExpenseCategory[expense.category] ?? expense.category,
+      detail: expense.detail || legacyExpenseDetail[expense.category] || expense.category,
+      description: expense.description || '—', cashIn: 0, cashOut: expense.amount,
+    }))
+
+    data.receivableTransactions.filter((transaction) => transaction.date <= today).forEach((transaction) => entries.push({
+      id: transaction.id, entityId: transaction.id, entityType: 'receivable',
+      date: transaction.date, source: 'Piutang', category: 'Piutang',
+      detail: transaction.transactionType === 'disbursement' ? 'Pemberian Piutang' : 'Penerimaan/Pelunasan Piutang',
+      description: `${transaction.debtor}${transaction.description ? ` · ${transaction.description}` : ''}`,
+      cashIn: transaction.transactionType === 'repayment' ? transaction.amount : 0,
+      cashOut: transaction.transactionType === 'disbursement' ? transaction.amount : 0,
+    }))
+
+    entries.sort((a, b) => a.date.localeCompare(b.date) || a.source.localeCompare(b.source) || a.id.localeCompare(b.id))
+    let balance = data.openingCashBalance
+    const rows: CashJournalEntry[] = entries.map((entry) => {
+      balance += entry.cashIn - entry.cashOut
+      return { ...entry, runningBalance: balance }
+    })
+    return {
+      rows,
+      totalCashIn: rows.reduce((sum, entry) => sum + entry.cashIn, 0),
+      totalCashOut: rows.reduce((sum, entry) => sum + entry.cashOut, 0),
+      closingBalance: rows.at(-1)?.runningBalance ?? data.openingCashBalance,
+    }
+  }, [accounts, data])
+  const filteredJournalRows = useMemo(() => {
+    const query = journalQuery.trim().toLowerCase()
+    if (!query) return cashJournal.rows
+    return cashJournal.rows.filter((entry) =>
+      `${entry.date} ${entry.source} ${entry.category} ${entry.detail} ${entry.description}`.toLowerCase().includes(query),
+    )
+  }, [cashJournal.rows, journalQuery])
 
   const outstandingForPeriod = (account: BillingAccount, month: string) => {
     const due = monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
@@ -447,6 +544,83 @@ function App() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Transaksi piutang gagal dihapus.') }
   }
 
+  const openJournalEdit = (entry: CashJournalEntry) => {
+    setError('')
+    const base: JournalEditForm = {
+      entry, date: entry.date, month: activeMonth, mandatoryAmount: '0', arrearsAmount: '0',
+      extraAmount: '0', extraType: 'Denda', method: 'Transfer', category: 'Beban',
+      detail: 'Beban Security', amount: String(entry.cashIn || entry.cashOut), debtor: 'Pak Idris',
+      transactionType: 'disbursement', notes: '',
+    }
+    if (entry.entityType === 'payment-dues' || entry.entityType === 'payment-other') {
+      const payment = data.payments.find((item) => item.id === entry.entityId)
+      if (!payment) return
+      setJournalEdit({
+        ...base, date: payment.paymentDate, month: payment.month,
+        mandatoryAmount: String(payment.mandatoryAmount), arrearsAmount: String(payment.arrearsAmount),
+        extraAmount: String(payment.extraAmount), extraType: payment.extraType,
+        method: payment.method || 'Transfer', notes: payment.notes,
+      })
+      return
+    }
+    if (entry.entityType === 'expense') {
+      const expense = data.expenses.find((item) => item.id === entry.entityId)
+      if (!expense) return
+      const category = legacyExpenseCategory[expense.category] ?? expense.category
+      setJournalEdit({ ...base, date: expense.date, category, detail: expense.detail || legacyExpenseDetail[expense.category] || category, amount: String(expense.amount), notes: expense.description })
+      return
+    }
+    const transaction = data.receivableTransactions.find((item) => item.id === entry.entityId)
+    if (!transaction) return
+    setJournalEdit({ ...base, date: transaction.date, amount: String(transaction.amount), debtor: transaction.debtor, transactionType: transaction.transactionType, notes: transaction.description })
+  }
+
+  const saveJournalEdit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!journalEdit) return
+    setError('')
+    try {
+      if (journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') {
+        const original = data.payments.find((item) => item.id === journalEdit.entry.entityId)
+        if (!original) throw new Error('Catatan penerimaan tidak ditemukan.')
+        const next: Payment = {
+          ...original, paymentDate: journalEdit.date, month: journalEdit.month,
+          method: journalEdit.method, notes: journalEdit.notes,
+          mandatoryAmount: journalEdit.entry.entityType === 'payment-dues' ? Number(journalEdit.mandatoryAmount) : original.mandatoryAmount,
+          arrearsAmount: journalEdit.entry.entityType === 'payment-dues' ? Number(journalEdit.arrearsAmount) : original.arrearsAmount,
+          extraAmount: journalEdit.entry.entityType === 'payment-other' ? Number(journalEdit.extraAmount) : original.extraAmount,
+          extraType: journalEdit.entry.entityType === 'payment-other' ? journalEdit.extraType : original.extraType,
+        }
+        const editedAmount = journalEdit.entry.entityType === 'payment-dues' ? next.mandatoryAmount + next.arrearsAmount : next.extraAmount
+        if (editedAmount <= 0) throw new Error('Nilai penerimaan harus lebih dari nol.')
+        if (supabaseConfigured) await updateRemotePayment(next)
+        setData((current) => ({ ...current, payments: current.payments.map((item) => item.id === next.id ? next : item) }))
+      } else if (journalEdit.entry.entityType === 'expense') {
+        const amount = Number(journalEdit.amount)
+        if (amount <= 0) throw new Error('Nilai pengeluaran harus lebih dari nol.')
+        const next: Expense = { id: journalEdit.entry.entityId, date: journalEdit.date, category: journalEdit.category, detail: journalEdit.detail, amount, description: journalEdit.notes }
+        if (supabaseConfigured) await updateRemoteExpense(next)
+        setData((current) => ({ ...current, expenses: current.expenses.map((item) => item.id === next.id ? next : item) }))
+      } else {
+        const original = data.receivableTransactions.find((item) => item.id === journalEdit.entry.entityId)
+        if (!original) throw new Error('Catatan piutang tidak ditemukan.')
+        const amount = Number(journalEdit.amount)
+        if (amount <= 0) throw new Error('Nilai transaksi piutang harus lebih dari nol.')
+        const originalMovement = original.transactionType === 'disbursement' ? original.amount : -original.amount
+        const originalBalanceAfterRemoval = (receivableBalances.get(original.debtor) ?? 0) - originalMovement
+        if (journalEdit.debtor !== original.debtor && originalBalanceAfterRemoval < 0) throw new Error('Pemberian piutang ini tidak dapat dipindahkan karena sudah memiliki pelunasan terkait.')
+        const targetBalanceBeforeEdit = journalEdit.debtor === original.debtor ? originalBalanceAfterRemoval : (receivableBalances.get(journalEdit.debtor) ?? 0)
+        const nextMovement = journalEdit.transactionType === 'disbursement' ? amount : -amount
+        if (targetBalanceBeforeEdit + nextMovement < 0) throw new Error(`Nilai penerimaan pelunasan melebihi saldo piutang tersedia sebesar ${rupiah.format(Math.max(targetBalanceBeforeEdit, 0))}.`)
+        const next: ReceivableTransaction = { id: original.id, date: journalEdit.date, transactionType: journalEdit.transactionType, debtor: journalEdit.debtor, amount, description: journalEdit.notes }
+        if (supabaseConfigured) await updateRemoteReceivableTransaction(next)
+        setData((current) => ({ ...current, receivableTransactions: current.receivableTransactions.map((item) => item.id === next.id ? next : item) }))
+      }
+      setJournalEdit(null)
+      flash('Catatan jurnal berhasil diperbarui dan saldo berjalan telah dihitung ulang.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Catatan jurnal gagal diperbarui.') }
+  }
+
   const patchHouse = (id: number, patch: Partial<House>) => setData((current) => ({ ...current, houses: current.houses.map((house) => house.id === id ? { ...house, ...patch } : house) }))
   const persistHouse = async (house: House) => {
     try { if (supabaseConfigured) await updateRemoteHouse(house); flash(`${house.number} diperbarui.`) }
@@ -581,6 +755,7 @@ function App() {
         <button className={adminView === 'payments' ? 'active' : ''} onClick={() => setAdminView('payments')}><ReceiptText size={18} />Penerimaan</button>
         <button className={adminView === 'expenses' ? 'active' : ''} onClick={() => setAdminView('expenses')}><WalletCards size={18} />Pengeluaran</button>
         <button className={adminView === 'receivables' ? 'active' : ''} onClick={() => setAdminView('receivables')}><TrendingUp size={18} />Piutang</button>
+        <button className={adminView === 'journal' ? 'active' : ''} onClick={() => setAdminView('journal')}><BookOpen size={18} />Jurnal Kas</button>
         <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
         <button className={adminView === 'settings' ? 'active' : ''} onClick={() => setAdminView('settings')}><Settings2 size={18} />Pengaturan</button>
       </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
@@ -638,6 +813,17 @@ function App() {
           <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat</span><h3>Semua Transaksi Piutang</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis</th><th>Peminjam</th><th>Keterangan</th><th>Jumlah</th><th /></tr></thead><tbody>{data.receivableTransactions.length ? data.receivableTransactions.map((transaction) => <tr key={transaction.id}><td>{transaction.date}</td><td><span className={`mini-status ${transaction.transactionType === 'repayment' ? 'paid' : 'due'}`}>{transaction.transactionType === 'disbursement' ? 'Pemberian' : 'Penerimaan/Pelunasan'}</span></td><td>{transaction.debtor}</td><td>{transaction.description || '—'}</td><td><strong>{rupiah.format(transaction.amount)}</strong></td><td><button className="icon-button danger" onClick={() => void removeReceivableTransaction(transaction)} title="Hapus transaksi piutang"><Trash2 size={16} /></button></td></tr>) : <tr><td colSpan={6}><div className="empty-state">Belum ada transaksi piutang.</div></td></tr>}</tbody></table></div></section>
         </>}
 
+        {adminView === 'journal' && <>
+          <div className="admin-heading journal-heading"><div><span>Kontrol rekening koran</span><h2>Jurnal Kas Terpadu</h2><p>Seluruh pergerakan uang disusun dari tanggal terlama ke terbaru sampai {pageOpenedLabel}.</p></div><label className="journal-search"><Search size={16} /><input placeholder="Cari tanggal, kategori, atau keterangan…" value={journalQuery} onChange={(event) => setJournalQuery(event.target.value)} /></label></div>
+          <section className="journal-summary-grid">
+            <article><span>Saldo awal kas</span><strong>{rupiah.format(data.openingCashBalance)}</strong></article>
+            <article className="cash-in"><span>Total kas masuk</span><strong>{rupiah.format(cashJournal.totalCashIn)}</strong></article>
+            <article className="cash-out"><span>Total kas keluar</span><strong>{rupiah.format(cashJournal.totalCashOut)}</strong></article>
+            <article className="closing"><span>Saldo akhir berjalan</span><strong>{rupiah.format(cashJournal.closingBalance)}</strong><small>{cashJournal.closingBalance === cash.cashBalance ? '✓ Sesuai saldo Ringkasan' : '⚠ Perlu diperiksa'}</small></article>
+          </section>
+          <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan tetap mengikuti seluruh transaksi, termasuk saat hasil pencarian sedang difilter.</p></div><span className="journal-order-badge"><CalendarDays size={14} />Terlama → terbaru</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi yang sesuai pencarian.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
+        </>}
+
         {adminView === 'houses' && <>
           <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola penghuni serta tagihan yang masih terutang sampai 31 Desember 2025.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
           <section className="panel opening-arrears-panel">
@@ -664,6 +850,23 @@ function App() {
         return <article className={state} key={item.month}><div className="month-status-icon">{item.isPending ? <CircleAlert size={18} /> : item.isNotApplicable || item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : item.isPartial ? <CircleAlert size={18} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isNotApplicable ? 'Belum mulai tagihan' : item.isPending ? 'Menunggu konfirmasi' : item.isPaid ? 'Lunas' : item.isPartial ? 'Dibayar sebagian' : item.isFuture ? 'Belum jatuh tempo' : 'Belum dibayar'}</span></div>{(state === 'due' || state === 'partial') && <div className="month-outstanding"><span>{state === 'partial' ? 'Sisa terutang' : 'Terutang'}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}{state === 'pending' && <div className="month-pending-note"><span>{item.pendingNotes}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>
       })}</div>
       <div className="recap-legend"><span><i className="dot paid" />Hijau: lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span><span><i className="dot partial" />Merah muda: dibayar sebagian</span><span><i className="dot pending" />Kuning: menunggu konfirmasi</span><span><i className="dot future" />Abu-abu: belum jatuh tempo</span></div>
+    </section></div>}
+
+    {journalEdit && <div className="modal-backdrop" role="presentation"><section className="login-dialog journal-edit-dialog" role="dialog" aria-modal="true" aria-label="Edit catatan jurnal">
+      <button className="modal-close" onClick={() => { setJournalEdit(null); setError('') }} aria-label="Tutup edit jurnal"><X size={20} /></button>
+      <div className="login-icon"><Pencil size={25} /></div><span className="section-kicker">Jurnal kas terpadu</span><h2>Edit Catatan</h2><p>{journalEdit.entry.category} · {journalEdit.entry.detail}. Perubahan akan langsung menghitung ulang saldo berjalan.</p>
+      {error && <div className="error-banner journal-edit-error"><CircleAlert size={17} /><span>{error}</span></div>}
+      <form className="form-grid" onSubmit={saveJournalEdit}>
+        <label>Tanggal transaksi<input type="date" required value={journalEdit.date} onChange={(event) => setJournalEdit({ ...journalEdit, date: event.target.value })} /></label>
+        {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Periode<input type="month" min="2026-01" required value={journalEdit.month} onChange={(event) => setJournalEdit({ ...journalEdit, month: event.target.value })} /></label>}
+        {journalEdit.entry.entityType === 'payment-dues' && <><label>Iuran periode<input type="number" min="0" step="1000" value={journalEdit.mandatoryAmount} onChange={(event) => setJournalEdit({ ...journalEdit, mandatoryAmount: event.target.value })} /></label><label>Pelunasan tunggakan<input type="number" min="0" step="1000" value={journalEdit.arrearsAmount} onChange={(event) => setJournalEdit({ ...journalEdit, arrearsAmount: event.target.value })} /></label></>}
+        {journalEdit.entry.entityType === 'payment-other' && <><label>Jenis penerimaan<select value={journalEdit.extraType} onChange={(event) => setJournalEdit({ ...journalEdit, extraType: event.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label>Nilai penerimaan<input type="number" min="0" step="1000" required value={journalEdit.extraAmount} onChange={(event) => setJournalEdit({ ...journalEdit, extraAmount: event.target.value })} /></label></>}
+        {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Metode<select value={journalEdit.method} onChange={(event) => setJournalEdit({ ...journalEdit, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>}
+        {journalEdit.entry.entityType === 'expense' && <><label>Jenis pembayaran<select value={journalEdit.category} onChange={(event) => { const category = event.target.value; setJournalEdit({ ...journalEdit, category, detail: expenseDetailsByCategory[category][0] }) }}><option>Beban</option><option>Lainnya</option></select></label><label>Detail pengeluaran<select value={journalEdit.detail} onChange={(event) => setJournalEdit({ ...journalEdit, detail: event.target.value })}>{expenseDetailsByCategory[journalEdit.category].map((detail) => <option key={detail}>{detail}</option>)}</select></label><label>Jumlah pengeluaran<input type="number" min="0" step="1000" required value={journalEdit.amount} onChange={(event) => setJournalEdit({ ...journalEdit, amount: event.target.value })} /></label></>}
+        {journalEdit.entry.entityType === 'receivable' && <><label>Jenis transaksi<select value={journalEdit.transactionType} onChange={(event) => setJournalEdit({ ...journalEdit, transactionType: event.target.value as 'disbursement' | 'repayment' })}><option value="disbursement">Pemberian Piutang</option><option value="repayment">Penerimaan/Pelunasan Piutang</option></select></label><label>Pihak peminjam<select value={journalEdit.debtor} onChange={(event) => setJournalEdit({ ...journalEdit, debtor: event.target.value })}>{receivableDebtors.map((debtor) => <option key={debtor}>{debtor}</option>)}</select></label><label>Jumlah transaksi<input type="number" min="0" step="1000" required value={journalEdit.amount} onChange={(event) => setJournalEdit({ ...journalEdit, amount: event.target.value })} /></label></>}
+        <label className="wide">Keterangan<input placeholder="Opsional" value={journalEdit.notes} onChange={(event) => setJournalEdit({ ...journalEdit, notes: event.target.value })} /></label>
+        <button className="primary-action wide" type="submit"><Check size={18} />Simpan perubahan</button>
+      </form>
     </section></div>}
 
     {showLogin && <div className="modal-backdrop" role="presentation"><section className="login-dialog" role="dialog" aria-modal="true" aria-label="Login admin"><button className="modal-close" onClick={() => setShowLogin(false)} aria-label="Tutup"><X size={20} /></button><div className="login-icon"><ShieldCheck size={28} /></div><span className="section-kicker">Akses pengurus</span><h2>Login Admin</h2><p>Masuk untuk mencatat pembayaran, pengeluaran, dan memperbarui data warga.</p><form onSubmit={signIn}><label>Email<input type="email" autoComplete="email" required value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} /></label><label>Kata sandi<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} /></label><button className="primary-action" type="submit"><LogIn size={18} />Masuk</button></form></section></div>}

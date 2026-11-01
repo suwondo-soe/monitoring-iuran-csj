@@ -185,6 +185,21 @@ export async function deleteRemotePayment(id: string) {
   if (error) throw error
 }
 
+export async function updateRemotePayment(payment: Payment) {
+  const { error } = await requireClient().from('payments').update({
+    house_id: payment.houseId,
+    period_month: `${payment.month}-01`,
+    payment_date: payment.paymentDate,
+    mandatory_amount: payment.mandatoryAmount,
+    arrears_amount: payment.arrearsAmount,
+    extra_amount: payment.extraAmount,
+    extra_type: payment.extraType,
+    payment_method: payment.method,
+    notes: payment.notes || null,
+  }).eq('id', payment.id)
+  if (error) throw error
+}
+
 export async function createRemoteExpense(expense: Expense) {
   const { error } = await requireClient().from('expenses').insert({
     id: expense.id,
@@ -202,6 +217,17 @@ export async function deleteRemoteExpense(id: string) {
   if (error) throw error
 }
 
+export async function updateRemoteExpense(expense: Expense) {
+  const { error } = await requireClient().from('expenses').update({
+    expense_date: expense.date,
+    category: expense.category,
+    detail: expense.detail,
+    amount: expense.amount,
+    description: expense.description || null,
+  }).eq('id', expense.id)
+  if (error) throw error
+}
+
 export async function createRemoteReceivableTransaction(transaction: ReceivableTransaction) {
   const { error } = await requireClient().from('expenses').insert({
     id: transaction.id,
@@ -216,6 +242,17 @@ export async function createRemoteReceivableTransaction(transaction: ReceivableT
 
 export async function deleteRemoteReceivableTransaction(id: string) {
   const { error } = await requireClient().from('expenses').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function updateRemoteReceivableTransaction(transaction: ReceivableTransaction) {
+  const { error } = await requireClient().from('expenses').update({
+    expense_date: transaction.date,
+    category: transaction.transactionType === 'disbursement' ? 'Piutang' : 'Pelunasan Piutang',
+    detail: transaction.debtor,
+    amount: transaction.amount,
+    description: transaction.description || null,
+  }).eq('id', transaction.id)
   if (error) throw error
 }
 
