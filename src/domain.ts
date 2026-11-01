@@ -159,10 +159,13 @@ export function cashSummary(data: LedgerData, activeMonth: string, asOfDate: str
   const allExpenses = data.expenses
     .filter((expense) => expense.date <= asOfDate)
     .reduce((sum, expense) => sum + expense.amount, 0)
+  const allReceivableCashFlow = data.receivableTransactions
+    .filter((transaction) => transaction.date <= asOfDate)
+    .reduce((sum, transaction) => sum + (transaction.transactionType === 'repayment' ? transaction.amount : -transaction.amount), 0)
 
   return {
     monthIncome,
     monthExpenses,
-    cashBalance: data.openingCashBalance + allIncome - allExpenses,
+    cashBalance: data.openingCashBalance + allIncome - allExpenses + allReceivableCashFlow,
   }
 }

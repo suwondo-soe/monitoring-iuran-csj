@@ -1,5 +1,5 @@
 export type PublicView = 'overview' | 'dues' | 'expenses'
-export type AdminView = 'payments' | 'expenses' | 'houses' | 'settings'
+export type AdminView = 'payments' | 'expenses' | 'receivables' | 'houses' | 'settings'
 export type ResidenceStatus = 'owner_occupied' | 'rented' | 'empty'
 
 export type House = {
@@ -50,11 +50,21 @@ export type Expense = {
   description: string
 }
 
+export type ReceivableTransaction = {
+  id: string
+  date: string
+  transactionType: 'disbursement' | 'repayment'
+  debtor: string
+  amount: number
+  description: string
+}
+
 export type LedgerData = {
   houses: House[]
   tariffs: Tariff[]
   payments: Payment[]
   expenses: Expense[]
+  receivableTransactions: ReceivableTransaction[]
   openingCashBalance: number
   jointFee0203: number
   bankName: string

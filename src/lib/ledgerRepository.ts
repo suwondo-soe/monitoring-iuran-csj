@@ -1,4 +1,4 @@
-import type { Expense, House, LedgerData, Payment, ResidenceStatus, Tariff } from '../types'
+import type { Expense, House, LedgerData, Payment, ReceivableTransaction, ResidenceStatus, Tariff } from '../types'
 import { DEFAULT_JOINT_FEE } from '../domain'
 import { supabase } from './supabase'
 
@@ -117,11 +117,21 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     notes: row.notes ?? '',
   }))
 
-  const expenses = (expensesResult.data as ExpenseRow[]).map((row): Expense => ({
+  const expenseRows = expensesResult.data as ExpenseRow[]
+  const expenses = expenseRows.filter((row) => row.category !== 'Piutang' && row.category !== 'Pelunasan Piutang').map((row): Expense => ({
     id: row.id,
     date: row.expense_date,
     category: row.category,
     detail: row.detail ?? '',
+    amount: Number(row.amount),
+    description: row.description ?? '',
+  }))
+
+  const receivableTransactions = expenseRows.filter((row) => row.category === 'Piutang' || row.category === 'Pelunasan Piutang').map((row): ReceivableTransaction => ({
+    id: row.id,
+    date: row.expense_date,
+    transactionType: row.category === 'Pelunasan Piutang' ? 'repayment' : 'disbursement',
+    debtor: (row.detail ?? 'Lainnya').replace(/^Piutang ke /, '').replace(/^Piutang /, ''),
     amount: Number(row.amount),
     description: row.description ?? '',
   }))
@@ -143,6 +153,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     tariffs,
     payments,
     expenses,
+    receivableTransactions,
     openingCashBalance: settingNumber(settings, 'opening_cash_balance', 0),
     jointFee0203: settingNumber(settings, 'joint_fee_02_03', DEFAULT_JOINT_FEE),
     bankName: settingText(settings, 'bank_name', 'Bank Neo Commerce'),
@@ -187,6 +198,23 @@ export async function createRemoteExpense(expense: Expense) {
 }
 
 export async function deleteRemoteExpense(id: string) {
+  const { error } = await requireClient().from('expenses').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function createRemoteReceivableTransaction(transaction: ReceivableTransaction) {
+  const { error } = await requireClient().from('expenses').insert({
+    id: transaction.id,
+    expense_date: transaction.date,
+    category: transaction.transactionType === 'disbursement' ? 'Piutang' : 'Pelunasan Piutang',
+    detail: transaction.debtor,
+    amount: transaction.amount,
+    description: transaction.description || null,
+  })
+  if (error) throw error
+}
+
+export async function deleteRemoteReceivableTransaction(id: string) {
   const { error } = await requireClient().from('expenses').delete().eq('id', id)
   if (error) throw error
 }
