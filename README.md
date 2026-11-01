@@ -14,6 +14,7 @@ pengurus yang masuk melalui Supabase Auth.
 - Pembayaran wajib, tunggakan, dan pembayaran tambahan
 - Tanggal transaksi terpisah dari periode iuran, termasuk pembayaran beberapa bulan sekaligus pada tanggal yang sama
 - Pencatatan pengeluaran
+- Klasifikasi pengeluaran bertingkat untuk Beban, Piutang, dan Lainnya
 - Tampilan publik hanya-baca
 - Login admin dengan Supabase Auth
 - Pengaturan rekening, saldo awal, dan tarif dari ruang admin
@@ -43,6 +44,9 @@ jalankan juga
 [`supabase/migrations/202611010002_import_2026_payments.sql`](supabase/migrations/202611010002_import_2026_payments.sql).
 Migrasi ini aman dijalankan ulang karena data impor menggunakan kunci unik yang
 tetap.
+
+Untuk menambahkan kategori dan detail pengeluaran, jalankan
+[`supabase/migrations/202611010003_expense_categories.sql`](supabase/migrations/202611010003_expense_categories.sql).
 
 Script tersebut juga mengisi 36 rumah dan mengaktifkan kebijakan keamanan. Jika
 menemukan tabel dari script Copilot sebelumnya, tabel lama dipindahkan ke schema

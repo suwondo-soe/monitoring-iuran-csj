@@ -31,6 +31,7 @@ type ExpenseRow = {
   id: string
   expense_date: string
   category: string
+  detail?: string | null
   amount: number | string
   description: string | null
 }
@@ -120,6 +121,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     id: row.id,
     date: row.expense_date,
     category: row.category,
+    detail: row.detail ?? '',
     amount: Number(row.amount),
     description: row.description ?? '',
   }))
@@ -177,6 +179,7 @@ export async function createRemoteExpense(expense: Expense) {
     id: expense.id,
     expense_date: expense.date,
     category: expense.category,
+    detail: expense.detail,
     amount: expense.amount,
     description: expense.description || null,
   })

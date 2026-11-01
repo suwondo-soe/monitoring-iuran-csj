@@ -69,9 +69,23 @@ const seedLedger: LedgerData = {
 const residenceLabel: Record<ResidenceStatus, string> = {
   owner_occupied: 'Dihuni pemilik', rented: 'Disewa', empty: 'Kosong',
 }
-const expenseLabel: Record<string, string> = {
-  Security: 'Keamanan', Cleaning: 'Kebersihan', Maintenance: 'Perawatan',
-  Administration: 'Administrasi', Other: 'Lainnya',
+const expenseDetailsByCategory: Record<string, string[]> = {
+  Beban: [
+    'Beban Security', 'Beban Sampah', 'Beban Pembangunan', 'Beban Sosial',
+    'Beban Air', 'Beban Listrik', 'Beban Sumbangan', 'Beban Lain-Lain', 'Beban Administrasi',
+  ],
+  Piutang: [
+    'Piutang ke Pak Idris', 'Piutang ke Pak Yoyon', 'Piutang ke Pak Wisnu',
+    'Piutang ke Pak Amsari', 'Piutang ke Mang Atta', 'Piutang Lainnya',
+  ],
+  Lainnya: ['Lainnya'],
+}
+const legacyExpenseCategory: Record<string, string> = {
+  Security: 'Beban', Cleaning: 'Beban', Maintenance: 'Beban', Administration: 'Beban', Other: 'Lainnya',
+}
+const legacyExpenseDetail: Record<string, string> = {
+  Security: 'Beban Security', Cleaning: 'Beban Sampah', Maintenance: 'Beban Pembangunan',
+  Administration: 'Beban Administrasi', Other: 'Lainnya',
 }
 
 function StatusGrid({ accounts, selectedId, onSelect }: {
@@ -112,7 +126,7 @@ function App() {
     periods: [{ month: activeMonth, mandatory: '0' }],
     arrears: '0', extra: '0', extraType: 'Tidak ada', method: 'Transfer', notes: '',
   })
-  const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Security', amount: '', description: '' })
+  const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Beban', detail: 'Beban Security', amount: '', description: '' })
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
@@ -283,12 +297,12 @@ function App() {
 
   const saveExpense = async (event: FormEvent) => {
     event.preventDefault(); setError('')
-    const expense: Expense = { id: crypto.randomUUID(), date: expenseForm.date, category: expenseForm.category, amount: Number(expenseForm.amount), description: expenseForm.description }
+    const expense: Expense = { id: crypto.randomUUID(), date: expenseForm.date, category: expenseForm.category, detail: expenseForm.detail, amount: Number(expenseForm.amount), description: expenseForm.description }
     if (expense.amount <= 0) { setError('Jumlah pengeluaran harus lebih dari nol.'); return }
     try {
       if (supabaseConfigured) await createRemoteExpense(expense)
       setData((current) => ({ ...current, expenses: [expense, ...current.expenses] }))
-      setExpenseForm({ date: today, category: 'Security', amount: '', description: '' }); flash('Pengeluaran berhasil dicatat.')
+      setExpenseForm({ date: today, category: 'Beban', detail: 'Beban Security', amount: '', description: '' }); flash('Pengeluaran berhasil dicatat.')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pengeluaran gagal disimpan.') }
   }
 
@@ -414,7 +428,7 @@ function App() {
 
       {publicView === 'expenses' && <section className="panel page-panel">
         <div className="panel-title"><div><span>Laporan {monthLabel(activeMonth)}</span><h2>Pengeluaran Kas</h2><p>Rincian penggunaan dana lingkungan pada periode yang dipilih.</p></div><div className="total-chip"><span>Total</span><strong>{rupiah.format(cash.monthExpenses)}</strong></div></div>
-        <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th></tr></thead><tbody>{monthExpenses.length ? monthExpenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{expenseLabel[expense.category] ?? expense.category}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td></tr>) : <tr><td colSpan={4}><div className="empty-state">Belum ada pengeluaran pada periode ini.</div></td></tr>}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Detail</th><th>Keterangan</th><th>Jumlah</th></tr></thead><tbody>{monthExpenses.length ? monthExpenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{legacyExpenseCategory[expense.category] ?? expense.category}</td><td>{expense.detail || legacyExpenseDetail[expense.category] || '—'}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td></tr>) : <tr><td colSpan={5}><div className="empty-state">Belum ada pengeluaran pada periode ini.</div></td></tr>}</tbody></table></div>
       </section>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
@@ -451,7 +465,18 @@ function App() {
           <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat akun</span><h3>{selected.code}</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Iuran</th><th>Tunggakan</th><th>Tambahan</th><th>Metode</th><th /></tr></thead><tbody>{selectedPayments.length ? selectedPayments.map((payment) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{rupiah.format(payment.mandatoryAmount)}</td><td>{rupiah.format(payment.arrearsAmount)}</td><td>{rupiah.format(payment.extraAmount)}</td><td>{payment.method || '—'}</td><td><button className="icon-button danger" onClick={() => void removePayment(payment)} title="Hapus pembayaran"><Trash2 size={16} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada pembayaran untuk akun ini.</div></td></tr>}</tbody></table></div></section>
         </>}
 
-        {adminView === 'expenses' && <><div className="admin-heading"><div><span>Kas keluar</span><h2>Catat Pengeluaran</h2><p>Semua pengeluaran akan langsung muncul pada laporan warga.</p></div></div><section className="panel form-card horizontal"><form className="form-grid expense-entry" onSubmit={saveExpense}><label>Tanggal<input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} /></label><label>Kategori<select value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}><option value="Security">Keamanan</option><option value="Cleaning">Kebersihan</option><option value="Maintenance">Perawatan</option><option value="Administration">Administrasi</option><option value="Other">Lainnya</option></select></label><label>Jumlah<input type="number" min="0" step="1000" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} /></label><label>Keterangan<input placeholder="Contoh: perbaikan lampu" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} /></label><button className="primary-action" type="submit"><Plus size={18} />Simpan</button></form></section><section className="panel history-panel"><div className="panel-title"><div><span>Riwayat</span><h3>Semua Pengeluaran</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th><th /></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{expenseLabel[expense.category] ?? expense.category}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td><td><button className="icon-button danger" onClick={() => void removeExpense(expense)} title="Hapus pengeluaran"><Trash2 size={16} /></button></td></tr>)}</tbody></table></div></section></>}
+        {adminView === 'expenses' && <>
+          <div className="admin-heading"><div><span>Kas keluar</span><h2>Catat Pengeluaran</h2><p>Semua pengeluaran akan langsung muncul pada laporan warga.</p></div></div>
+          <section className="panel form-card horizontal"><form className="form-grid expense-entry" onSubmit={saveExpense}>
+            <label>Tanggal<input type="date" required value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} /></label>
+            <label>Jenis pembayaran<select value={expenseForm.category} onChange={(e) => { const category = e.target.value; setExpenseForm({ ...expenseForm, category, detail: expenseDetailsByCategory[category][0] }) }}><option>Beban</option><option>Piutang</option><option>Lainnya</option></select></label>
+            <label>Detail pengeluaran<select value={expenseForm.detail} onChange={(e) => setExpenseForm({ ...expenseForm, detail: e.target.value })}>{expenseDetailsByCategory[expenseForm.category].map((detail) => <option key={detail}>{detail}</option>)}</select></label>
+            <label>Jumlah<input type="number" min="0" step="1000" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} /></label>
+            <label>Keterangan<input placeholder="Opsional" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} /></label>
+            <button className="primary-action" type="submit"><Plus size={18} />Simpan</button>
+          </form></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Riwayat</span><h3>Semua Pengeluaran</h3></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th>Detail</th><th>Keterangan</th><th>Jumlah</th><th /></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{expense.date}</td><td>{legacyExpenseCategory[expense.category] ?? expense.category}</td><td>{expense.detail || legacyExpenseDetail[expense.category] || '—'}</td><td>{expense.description || '—'}</td><td><strong>{rupiah.format(expense.amount)}</strong></td><td><button className="icon-button danger" onClick={() => void removeExpense(expense)} title="Hapus pengeluaran"><Trash2 size={16} /></button></td></tr>)}</tbody></table></div></section>
+        </>}
 
         {adminView === 'houses' && <>
           <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola penghuni serta tagihan yang masih terutang sampai 31 Desember 2025.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
