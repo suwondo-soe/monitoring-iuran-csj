@@ -8,7 +8,7 @@ import {
 import './App.css'
 import {
   buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
-  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, monthsBetween, receivableCashMovement,
+  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, receivableCashMovement,
   responsibilityForAccountMonth, samePerson, statementForAccount, tariffForMonth,
 } from './domain'
 import {
@@ -40,6 +40,20 @@ const nextMonthValue = (month: string) => {
   const [year, monthNumber] = month.split('-').map(Number)
   const next = new Date(year, monthNumber, 1)
   return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
+}
+
+const responsibilityPeriodLabel = (months: string[]) => {
+  const sorted = [...new Set(months)].sort()
+  if (!sorted.length) return 'Tidak ada periode'
+  const ranges: Array<{ start: string; end: string }> = []
+  sorted.forEach((month) => {
+    const current = ranges.at(-1)
+    if (current && nextMonthValue(current.end) === month) current.end = month
+    else ranges.push({ start: month, end: month })
+  })
+  return ranges.map(({ start, end }) => start === end
+    ? monthLabel(start)
+    : `${monthLabel(start)} – ${monthLabel(end)}`).join(', ')
 }
 
 const people = [
@@ -371,9 +385,7 @@ function App() {
       name: string
       role: string
       isCurrent: boolean
-      openingOriginal: number
-      openingPaid: number
-      openingOutstanding: number
+      months: string[]
       monthlyBilled: number
       monthlyPaid: number
       monthlyOutstanding: number
@@ -385,50 +397,38 @@ function App() {
       if (existing) return existing
       const next: LiabilityGroup = {
         key, name, role, isCurrent: samePerson(name, selected.residentName),
-        openingOriginal: 0, openingPaid: 0, openingOutstanding: 0,
+        months: [],
         monthlyBilled: 0, monthlyPaid: 0, monthlyOutstanding: 0,
       }
       groups.set(key, next)
       return next
     }
 
-    openingArrearsBalances
-      .filter((item) => item.houseId !== null && selected.houseIds.includes(item.houseId))
-      .forEach((item) => {
-        const group = ensureGroup(item.debtorName, arrearsDebtorRoleLabel[item.debtorRole])
-        group.openingOriginal += item.originalAmount
-        group.openingPaid += item.settled
-        group.openingOutstanding += item.outstanding
-      })
-
-    monthsBetween('2026-01', currentMonth).forEach((month) => {
-      const responsibility = responsibilityForAccountMonth(selected, data, month)
-      const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
-      if (due <= 0) return
+    monthlyRecap.forEach((item) => {
+      if (item.due <= 0) return
+      const responsibility = responsibilityForAccountMonth(selected, data, item.month)
       const group = ensureGroup(responsibility.name, occupantRoleLabel[responsibility.role])
-      const periodPayments = data.payments.filter((payment) =>
-        selected.houseIds.includes(payment.houseId) && payment.month === month,
-      )
-      const paid = periodPayments.reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
-      const genericArrearsPaid = periodPayments
-        .filter((payment) => !payment.openingArrearsItemId)
-        .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
-      group.monthlyBilled += due
-      group.monthlyPaid += paid + genericArrearsPaid
-      group.monthlyOutstanding += Math.max(due - paid - genericArrearsPaid, 0)
+      group.months.push(item.month)
+      if (item.month <= currentMonth || item.paid > 0) {
+        group.monthlyBilled += item.due
+        group.monthlyPaid += item.paid
+      }
+      if (item.month <= currentMonth) group.monthlyOutstanding += item.outstanding
     })
 
     return [...groups.values()]
-      .filter((group) => group.openingOriginal > 0 || group.monthlyBilled > 0)
+      .filter((group) => group.months.length > 0)
       .sort((first, second) => Number(second.isCurrent) - Number(first.isCurrent)
-        || (second.openingOutstanding + second.monthlyOutstanding)
-          - (first.openingOutstanding + first.monthlyOutstanding)
+        || second.monthlyOutstanding - first.monthlyOutstanding
         || first.name.localeCompare(second.name))
-  }, [data, openingArrearsBalances, selected])
-  const currentRecapStatement = useMemo(
-    () => statementForAccount(selected, data, currentMonth),
-    [data, selected],
-  )
+  }, [data, monthlyRecap, selected])
+  const selectedYearOutstanding = monthlyRecap
+    .filter((item) => item.month <= currentMonth)
+    .reduce((sum, item) => sum + item.outstanding, 0)
+  const selectedYearIsFuture = `${recapYear}-01` > currentMonth
+  const selectedYearStatus = selectedYearIsFuture
+    ? 'Belum jatuh tempo'
+    : selectedYearOutstanding === 0 ? 'Lunas' : 'Belum lunas'
   const availableReportYears = useMemo(() => {
     const transactionYears = [
       ...data.payments.map((payment) => Number(payment.paymentDate.slice(0, 4))),
@@ -1249,7 +1249,7 @@ function App() {
         </>}
 
         {adminView === 'opening-arrears' && <>
-          <div className="admin-heading"><div><span>Kontrol tunggakan historis</span><h2>Tunggakan s.d. 31 Desember 2025</h2><p>Kelola saldo per akun dan pihak yang bertanggung jawab secara terpisah dari data penghuni saat ini.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
+          <div className="admin-heading"><div><span>Kontrol tunggakan historis</span><h2>Tunggakan s.d. 31 Desember 2025</h2><p>Rincian debitur menjadi satu-satunya sumber saldo dan pihak yang bertanggung jawab.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
           <div className="admin-two-column arrears-payment-entry">
             <section className="panel form-card"><div className="panel-title"><div><span>Kas masuk tunggakan lama</span><h3>Input Pembayaran Tunggakan</h3><p>Pembayaran akan menambah saldo kas dan mengurangi outstanding debitur.</p></div></div><form className="form-grid" onSubmit={saveOpeningArrearsPayment}>
               <label className="wide">Pihak yang membayar<select required value={arrearsPaymentForm.openingArrearsItemId} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, openingArrearsItemId: event.target.value })}><option value="">Pilih debitur tunggakan</option>{openingArrearsBalances.filter((item) => item.outstanding > 0).map((item) => <option key={item.id} value={item.id}>{item.debtorName} · sisa {rupiah.format(item.outstanding)}</option>)}</select></label>
@@ -1261,10 +1261,6 @@ function App() {
             </form></section>
             <section className="panel arrears-payment-history"><div className="panel-title"><div><span>Riwayat kas masuk</span><h3>Pembayaran Terakhir</h3><p>Gunakan Jurnal Kas untuk mengedit; tombol sampah tetap tersedia untuk menghapus.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Debitur</th><th>Nilai</th><th /></tr></thead><tbody>{data.openingArrearsPayments.length ? [...data.openingArrearsPayments].sort((a, b) => b.paymentDate.localeCompare(a.paymentDate)).map((payment) => { const item = data.openingArrearsItems.find((row) => row.id === payment.openingArrearsItemId); return <tr key={payment.id}><td>{payment.paymentDate}</td><td><strong>{item?.debtorName ?? 'Tidak ditemukan'}</strong><small className="payment-method-note">{payment.method || '—'}</small></td><td>{rupiah.format(payment.amount)}</td><td><button className="icon-button danger" type="button" onClick={() => void removeOpeningArrearsPayment(payment)} title="Hapus pembayaran tunggakan"><Trash2 size={15} /></button></td></tr> }) : <tr><td colSpan={4}><div className="empty-state">Belum ada pembayaran tunggakan lama.</div></td></tr>}</tbody></table></div></section>
           </div>
-          <section className="panel opening-arrears-panel">
-            <div className="panel-title"><div><span>Kontrol saldo per penanggung jawab</span><h3>Saldo Outstanding s.d. 31 Desember 2025</h3><p>Hanya saldo yang masih terutang yang ditampilkan. Saldo mengikuti nama debitur, bukan penghuni rumah saat ini.</p></div><div className="admin-stat"><span>Debitur aktif</span><strong>{openingArrearsBalances.filter((item) => item.outstanding > 0).length}</strong></div></div>
-            <div className="opening-arrears-balance-grid">{openingArrearsBalances.filter((item) => item.outstanding > 0).sort((first, second) => second.outstanding - first.outstanding).map((item) => { const house = item.houseId ? data.houses.find((row) => row.id === item.houseId) : null; return <article key={item.id}><div><span>{house?.number ?? 'Rumah lama belum diketahui'}</span><strong>{item.debtorName}</strong><small>{arrearsDebtorRoleLabel[item.debtorRole]}</small></div><div><span>Saldo outstanding</span><strong>{rupiah.format(item.outstanding)}</strong></div></article> })}</div>
-          </section>
           <section className="panel arrears-detail-panel">
             <div className="panel-title"><div><span>Siapa yang bertanggung jawab</span><h3>Rincian Debitur Tunggakan Awal</h3><p>Nama debitur tetap tersimpan meskipun penyewa sudah pindah atau rumah berganti penghuni.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
             <form className="form-grid trace-form" onSubmit={saveOpeningArrearsItem}>
@@ -1306,11 +1302,10 @@ function App() {
 
     {showRecap && <div className="modal-backdrop" role="presentation"><section className="recap-dialog" role="dialog" aria-modal="true" aria-label={`Rekap pembayaran ${selected.code}`}>
       <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
-      <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>{selected.residentName}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${currentRecapStatement.isPaid ? 'paid' : 'due'}`}>{currentRecapStatement.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
+      <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>Iuran tahun {recapYear}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${selectedYearIsFuture ? 'future' : selectedYearOutstanding === 0 ? 'paid' : 'due'}`}>{selectedYearStatus}</span></div>
       <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{availableReportYears.map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}<button className="add-year" onClick={() => setMaxReportYear((year) => year + 1)} type="button"><Plus size={14} />{availableReportYears.at(-1)! + 1}</button></div>
-      <div className="cumulative-due"><div><span>Kumulatif belum terbayar · {selected.residentName}</span><small>Hanya kewajiban penanggung jawab aktif, sampai halaman dibuka pada {pageOpenedLabel}</small></div><strong>{rupiah.format(currentRecapStatement.totalOutstanding)}</strong></div>
-      <div className="prior-arrears"><div><span>Tagihan {selected.residentName} sampai 31 Desember 2025</span><small>Tunggakan milik orang lain pada rumah ini tidak dimasukkan.</small></div><strong>{rupiah.format(selected.openingArrears)}</strong></div>
-      <section className="debtor-liability-section"><div className="debtor-liability-heading"><div><span className="section-kicker">Pemisahan penanggung jawab</span><h3>Kewajiban per Nama</h3></div><small>Iuran bulanan mengikuti penghuni yang aktif pada tanggal 1 setiap bulan.</small></div><div className="debtor-liability-grid">{debtorLiabilityGroups.map((group) => <article className={group.isCurrent ? 'current' : ''} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni aktif</span> : <span className="former-debtor-badge">Penanggung jawab lama</span>}</div><dl><div><dt>Sisa s.d. 2025</dt><dd>{rupiah.format(group.openingOutstanding)}</dd></div><div><dt>Sisa iuran bulanan</dt><dd>{rupiah.format(group.monthlyOutstanding)}</dd></div><div className="liability-total"><dt>Total atas nama ini</dt><dd>{rupiah.format(group.openingOutstanding + group.monthlyOutstanding)}</dd></div></dl></article>)}</div></section>
+      <div className="cumulative-due"><div><span>Tunggakan iuran tahun {recapYear}</span><small>{selectedYearIsFuture ? 'Belum ada iuran yang jatuh tempo pada tahun ini.' : recapYear === now.getFullYear() ? `Akumulasi bulan jatuh tempo sampai ${pageOpenedLabel}` : `Posisi sampai 31 Desember ${recapYear}`}</small></div><strong>{rupiah.format(selectedYearOutstanding)}</strong></div>
+      <section className="debtor-liability-section"><div className="debtor-liability-heading"><div><span className="section-kicker">Penghuni dan periode</span><h3>Penanggung Jawab Tahun {recapYear}</h3></div><small>Penanggung jawab iuran mengikuti penghuni yang aktif pada tanggal 1 setiap bulan.</small></div><div className="debtor-liability-grid">{debtorLiabilityGroups.map((group) => <article className={group.isCurrent ? 'current' : ''} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni saat ini</span> : <span className="former-debtor-badge">Penghuni periode</span>}</div><dl><div className="responsibility-period"><dt>Periode tanggung jawab</dt><dd>{responsibilityPeriodLabel(group.months)}</dd></div><div><dt>Tagihan jatuh tempo</dt><dd>{rupiah.format(group.monthlyBilled)}</dd></div><div><dt>Sudah dibayar</dt><dd>{rupiah.format(group.monthlyPaid)}</dd></div><div className="liability-total"><dt>Tunggakan {recapYear}</dt><dd>{rupiah.format(group.monthlyOutstanding)}</dd></div></dl></article>)}</div></section>
       <div className="month-recap-grid">{monthlyRecap.map((item) => {
         const state = item.isNotApplicable ? 'not-applicable' : item.isPending ? 'pending' : item.isPaid ? 'paid' : item.isPartial ? 'partial' : item.isFuture ? 'future' : 'due'
         return <article className={`${state} ${item.isCurrentResident ? '' : 'other-responsibility'}`} key={item.month}><div className="month-status-icon">{item.isPending ? <CircleAlert size={18} /> : item.isNotApplicable || item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : item.isPartial ? <CircleAlert size={18} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isNotApplicable ? 'Belum mulai tagihan' : item.isPending ? 'Menunggu konfirmasi' : item.isPaid ? 'Lunas' : item.isPartial ? 'Dibayar sebagian' : item.isFuture ? 'Belum jatuh tempo' : 'Belum dibayar'}</span>{item.responsibleName && <small className="month-responsible-name">Atas nama {item.responsibleName}</small>}</div>{(state === 'due' || state === 'partial') && <div className="month-outstanding"><span>{state === 'partial' ? 'Sisa terutang' : 'Terutang'}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}{state === 'pending' && <div className="month-pending-note"><span>{item.pendingNotes}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>
