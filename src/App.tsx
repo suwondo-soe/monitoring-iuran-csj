@@ -480,6 +480,57 @@ function App() {
   const selectedYearStatus = selectedYearIsFuture
     ? 'Belum jatuh tempo'
     : selectedYearOutstanding === 0 ? 'Lunas' : 'Belum lunas'
+  const previousYearArrears = useMemo(() => {
+    type PreviousYearArrears = {
+      year: number
+      openingAmount: number
+      monthlyAmount: number
+      total: number
+    }
+    const balances = new Map<number, PreviousYearArrears>()
+    const addBalance = (year: number, field: 'openingAmount' | 'monthlyAmount', amount: number) => {
+      if (amount <= 0 || year >= recapYear) return
+      const current = balances.get(year) ?? { year, openingAmount: 0, monthlyAmount: 0, total: 0 }
+      current[field] += amount
+      current.total += amount
+      balances.set(year, current)
+    }
+
+    data.openingArrearsItems
+      .filter((item) => item.houseId !== null
+        && selected.houseIds.includes(item.houseId)
+        && samePerson(item.debtorName, selected.residentName))
+      .forEach((item) => {
+        const settled = data.payments
+          .filter((payment) => payment.openingArrearsItemId === item.id && payment.paymentDate <= today)
+          .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+          + data.openingArrearsPayments
+            .filter((payment) => payment.openingArrearsItemId === item.id && payment.paymentDate <= today)
+            .reduce((sum, payment) => sum + payment.amount, 0)
+        addBalance(Number(item.cutoffDate.slice(0, 4)), 'openingAmount', Math.max(item.originalAmount - settled, 0))
+      })
+
+    for (let year = 2026; year < recapYear; year += 1) {
+      const monthlyAmount = Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, '0')}`)
+        .filter((month) => month <= currentMonth
+          && samePerson(responsibilityForAccountMonth(selected, data, month).name, selected.residentName))
+        .reduce((sum, month) => {
+          const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
+          const paid = data.payments
+            .filter((payment) => selected.houseIds.includes(payment.houseId)
+              && payment.month === month
+              && payment.paymentDate <= today)
+            .reduce((paymentSum, payment) => paymentSum + payment.mandatoryAmount, 0)
+          return sum + Math.max(due - paid, 0)
+        }, 0)
+      addBalance(year, 'monthlyAmount', monthlyAmount)
+    }
+
+    return [...balances.values()]
+      .filter((item) => item.total > 0)
+      .sort((first, second) => first.year - second.year)
+  }, [data, recapYear, selected])
+  const previousYearArrearsTotal = previousYearArrears.reduce((sum, item) => sum + item.total, 0)
   const availableReportYears = useMemo(() =>
     Array.from({ length: Math.max(data.reportYearEnd, 2030) - 2026 + 1 }, (_, index) => 2026 + index),
   [data.reportYearEnd])
@@ -1358,6 +1409,10 @@ function App() {
       <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>Iuran tahun {recapYear}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${selectedYearIsFuture ? 'future' : selectedYearOutstanding === 0 ? 'paid' : 'due'}`}>{selectedYearStatus}</span></div>
       <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{availableReportYears.map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}</div>
       <div className="cumulative-due"><div><span>Tunggakan iuran tahun {recapYear}</span><small>{selectedYearIsFuture ? 'Belum ada iuran yang jatuh tempo pada tahun ini.' : recapYear === now.getFullYear() ? `Akumulasi bulan jatuh tempo sampai ${pageOpenedLabel}` : `Posisi sampai 31 Desember ${recapYear}`}</small></div><strong>{rupiah.format(selectedYearOutstanding)}</strong></div>
+      {previousYearArrears.length > 0 && <section className="previous-year-arrears">
+        <div className="previous-year-arrears-heading"><div><span className="section-kicker">Saldo lintas tahun</span><h3>Tunggakan Tahun Sebelumnya</h3><p>Hanya menampilkan kewajiban {selected.residentName} pada {selected.code} yang masih belum lunas.</p></div><div><span>Total sebelumnya</span><strong>{rupiah.format(previousYearArrearsTotal)}</strong></div></div>
+        <div className="previous-year-arrears-list">{previousYearArrears.map((item) => <article key={item.year}><div><span>{item.year < 2026 ? `Sampai 31 Desember ${item.year}` : `Tahun ${item.year}`}</span><small>{item.openingAmount > 0 && item.monthlyAmount > 0 ? `Saldo awal ${rupiah.format(item.openingAmount)} · iuran ${rupiah.format(item.monthlyAmount)}` : item.openingAmount > 0 ? 'Saldo tunggakan awal' : 'Iuran wajib belum lunas'}</small></div><strong>{rupiah.format(item.total)}</strong></article>)}</div>
+      </section>}
       <section className="debtor-liability-section"><div className="debtor-liability-heading"><div><span className="section-kicker">Penghuni dan periode</span><h3>Penanggung Jawab Tahun {recapYear}</h3></div><small>Penanggung jawab iuran mengikuti penghuni yang aktif pada tanggal 1 setiap bulan.</small></div><div className="debtor-liability-grid">{debtorLiabilityGroups.map((group) => <article className={group.isCurrent ? 'current' : ''} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni saat ini</span> : <span className="former-debtor-badge">Penghuni periode</span>}</div><dl><div className="responsibility-period"><dt>Periode tanggung jawab</dt><dd>{responsibilityPeriodLabel(group.months)}</dd></div><div><dt>Tagihan jatuh tempo</dt><dd>{rupiah.format(group.monthlyBilled)}</dd></div><div><dt>Sudah dibayar</dt><dd>{rupiah.format(group.monthlyPaid)}</dd></div><div className="liability-total"><dt>Tunggakan {recapYear}</dt><dd>{rupiah.format(group.monthlyOutstanding)}</dd></div></dl></article>)}</div></section>
       <div className="month-recap-grid">{monthlyRecap.map((item) => {
         const state = item.isNotApplicable ? 'not-applicable' : item.isPending ? 'pending' : item.isPaid ? 'paid' : item.isPartial ? 'partial' : item.isFuture ? 'future' : 'due'
