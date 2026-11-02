@@ -162,14 +162,18 @@ function StatusGrid({ accounts, selectedId, onSelect }: {
   onSelect: (account: BillingAccount) => void
 }) {
   return <div className="status-grid">
-    {accounts.map((account) => <button
-      className={`status-house ${account.isPaid ? 'paid' : 'due'} ${selectedId === account.id ? 'selected' : ''}`}
-      key={account.id} onClick={() => onSelect(account)} type="button"
-      aria-label={`${account.code}, ${account.isPaid ? 'lunas' : 'belum lunas'}`}
-    >
-      <strong>{account.shortCode}</strong>
-      <span>{account.isPaid ? <Check size={13} /> : null}{account.isPaid ? 'Lunas' : 'Belum'}</span>
-    </button>)}
+    {accounts.map((account) => {
+      const statusLabel = account.isPaid ? 'Lunas' : rupiah.format(account.totalOutstanding)
+      return <button
+        className={`status-house ${account.isPaid ? 'paid' : 'due'} ${selectedId === account.id ? 'selected' : ''}`}
+        key={account.id} onClick={() => onSelect(account)} type="button"
+        aria-label={`${account.code}, ${account.isPaid ? 'lunas' : `total tunggakan ${statusLabel}`}`}
+        title={account.isPaid ? `${account.code} lunas` : `${account.code} · Total tunggakan ${statusLabel}`}
+      >
+        <strong>{account.shortCode}</strong>
+        <span>{account.isPaid ? <Check size={13} /> : null}{statusLabel}</span>
+      </button>
+    })}
   </div>
 }
 
