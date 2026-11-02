@@ -537,55 +537,6 @@ export async function deleteRemoteOpeningArrearsPayment(id: string) {
   if (error) throw error
 }
 
-export async function setRemoteOpeningArrearsTotal(houseIds: number[], total: number) {
-  const client = requireClient()
-  const { data, error } = await client.from('opening_arrears_items')
-    .select('id,house_id,debtor_role,original_amount')
-    .in('house_id', houseIds)
-  if (error) throw error
-
-  const rows = (data ?? []) as Array<{ id: string; house_id: number; debtor_role: string; original_amount: number | string }>
-  const assignedTotal = rows
-    .filter((row) => row.debtor_role !== 'unassigned')
-    .reduce((sum, row) => sum + Number(row.original_amount), 0)
-  if (total < assignedTotal) {
-    throw new Error(`Nilai total tidak boleh lebih kecil dari rincian debitur sebesar ${assignedTotal}.`)
-  }
-
-  const unassignedRows = rows.filter((row) => row.debtor_role === 'unassigned')
-  const unassignedTotal = total - assignedTotal
-  if (unassignedRows.length) {
-    const [primary, ...duplicates] = unassignedRows
-    if (unassignedTotal > 0) {
-      const { error: updateError } = await client.from('opening_arrears_items')
-        .update({ original_amount: unassignedTotal })
-        .eq('id', primary.id)
-      if (updateError) throw updateError
-    } else {
-      const { error: deleteError } = await client.from('opening_arrears_items').delete().eq('id', primary.id)
-      if (deleteError) throw deleteError
-    }
-    if (duplicates.length) {
-      const { error: duplicateError } = await client.from('opening_arrears_items')
-        .delete().in('id', duplicates.map((row) => row.id))
-      if (duplicateError) throw duplicateError
-    }
-    return
-  }
-
-  if (unassignedTotal > 0) {
-    const { error: insertError } = await client.from('opening_arrears_items').insert({
-      house_id: houseIds[0],
-      debtor_name: 'Belum dialokasikan',
-      debtor_role: 'unassigned',
-      cutoff_date: '2025-12-31',
-      original_amount: unassignedTotal,
-      notes: 'Saldo agregat; rincian pihak yang berutang belum ditentukan',
-    })
-    if (insertError) throw insertError
-  }
-}
-
 export async function updateRemoteSettings(settings: Record<string, string | number>) {
   const rows = Object.entries(settings).map(([key, value]) => ({ key, value }))
   const { error } = await requireClient().from('app_settings').upsert(rows)

@@ -16,7 +16,7 @@ import {
   createRemoteOpeningArrearsPayment, createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
   deleteRemoteOccupancy, deleteRemoteOpeningArrearsItem, deleteRemoteOpeningArrearsPayment, deleteRemotePayment,
   deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
-  setRemoteOpeningArrearsTotal, updateRemoteOpeningArrearsPayment, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
+  updateRemoteOpeningArrearsPayment, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
@@ -214,7 +214,6 @@ function App() {
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
   const [houseEffectiveDates, setHouseEffectiveDates] = useState<Record<number, string>>({})
-  const [openingArrearsDrafts, setOpeningArrearsDrafts] = useState<Record<string, string>>({})
   const [arrearsForm, setArrearsForm] = useState({
     houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
     cutoffDate: '2025-12-31', originalAmount: '', notes: '',
@@ -935,29 +934,6 @@ function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
   }
 
-  const saveOpeningArrears = async (account: BillingAccount) => {
-    try {
-      const draft = openingArrearsDrafts[account.id]
-      const value = draft === undefined || draft === '' ? 0 : Number(draft)
-      if (!Number.isFinite(value) || value < 0) throw new Error('Nilai tunggakan awal tidak valid.')
-      if (supabaseConfigured) {
-        await setRemoteOpeningArrearsTotal(account.houseIds, value)
-        await loadData()
-      } else {
-        setData((current) => ({
-          ...current,
-          houses: current.houses.map((house) => account.houseIds.includes(house.id)
-            ? { ...house, openingArrears: house.id === account.houseIds[0] ? value : 0 }
-            : house),
-        }))
-      }
-      setOpeningArrearsDrafts((current) => { const next = { ...current }; delete next[account.id]; return next })
-      flash(`Tagihan lama ${account.code} berhasil disimpan.`)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Tagihan lama gagal disimpan.')
-    }
-  }
-
   const saveOpeningArrearsItem = async (event: FormEvent) => {
     event.preventDefault(); setError('')
     const amount = Number(arrearsForm.originalAmount)
@@ -1286,8 +1262,8 @@ function App() {
             <section className="panel arrears-payment-history"><div className="panel-title"><div><span>Riwayat kas masuk</span><h3>Pembayaran Terakhir</h3><p>Gunakan Jurnal Kas untuk mengedit; tombol sampah tetap tersedia untuk menghapus.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Debitur</th><th>Nilai</th><th /></tr></thead><tbody>{data.openingArrearsPayments.length ? [...data.openingArrearsPayments].sort((a, b) => b.paymentDate.localeCompare(a.paymentDate)).map((payment) => { const item = data.openingArrearsItems.find((row) => row.id === payment.openingArrearsItemId); return <tr key={payment.id}><td>{payment.paymentDate}</td><td><strong>{item?.debtorName ?? 'Tidak ditemukan'}</strong><small className="payment-method-note">{payment.method || '—'}</small></td><td>{rupiah.format(payment.amount)}</td><td><button className="icon-button danger" type="button" onClick={() => void removeOpeningArrearsPayment(payment)} title="Hapus pembayaran tunggakan"><Trash2 size={15} /></button></td></tr> }) : <tr><td colSpan={4}><div className="empty-state">Belum ada pembayaran tunggakan lama.</div></td></tr>}</tbody></table></div></section>
           </div>
           <section className="panel opening-arrears-panel">
-            <div className="panel-title"><div><span>Kontrol saldo per akun</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Kosongkan kolom untuk menyimpan Rp0. Nilai tidak boleh lebih kecil dari rincian debitur yang sudah dialokasikan.</p></div></div>
-            <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" placeholder="0" value={openingArrearsDrafts[account.id] ?? (account.openingArrears === 0 ? '' : String(account.openingArrears))} onChange={(event) => setOpeningArrearsDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
+            <div className="panel-title"><div><span>Kontrol saldo per penanggung jawab</span><h3>Saldo Outstanding s.d. 31 Desember 2025</h3><p>Hanya saldo yang masih terutang yang ditampilkan. Saldo mengikuti nama debitur, bukan penghuni rumah saat ini.</p></div><div className="admin-stat"><span>Debitur aktif</span><strong>{openingArrearsBalances.filter((item) => item.outstanding > 0).length}</strong></div></div>
+            <div className="opening-arrears-balance-grid">{openingArrearsBalances.filter((item) => item.outstanding > 0).sort((first, second) => second.outstanding - first.outstanding).map((item) => { const house = item.houseId ? data.houses.find((row) => row.id === item.houseId) : null; return <article key={item.id}><div><span>{house?.number ?? 'Rumah lama belum diketahui'}</span><strong>{item.debtorName}</strong><small>{arrearsDebtorRoleLabel[item.debtorRole]}</small></div><div><span>Saldo outstanding</span><strong>{rupiah.format(item.outstanding)}</strong></div></article> })}</div>
           </section>
           <section className="panel arrears-detail-panel">
             <div className="panel-title"><div><span>Siapa yang bertanggung jawab</span><h3>Rincian Debitur Tunggakan Awal</h3><p>Nama debitur tetap tersimpan meskipun penyewa sudah pindah atau rumah berganti penghuni.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
