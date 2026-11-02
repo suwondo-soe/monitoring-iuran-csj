@@ -39,6 +39,15 @@ export type OpeningArrearsItem = {
   notes: string
 }
 
+export type OpeningArrearsPayment = {
+  id: string
+  openingArrearsItemId: string
+  paymentDate: string
+  amount: number
+  method: string
+  notes: string
+}
+
 export type PendingPaymentMonth = {
   houseId: number
   month: string
@@ -89,6 +98,7 @@ export type LedgerData = {
   houses: House[]
   houseOccupancies: HouseOccupancy[]
   openingArrearsItems: OpeningArrearsItem[]
+  openingArrearsPayments: OpeningArrearsPayment[]
   tariffs: Tariff[]
   payments: Payment[]
   expenses: Expense[]

@@ -1,5 +1,5 @@
 import type {
-  Expense, House, HouseOccupancy, LedgerData, OpeningArrearsItem, Payment,
+  Expense, House, HouseOccupancy, LedgerData, OpeningArrearsItem, OpeningArrearsPayment, Payment,
   ReceivableTransaction, ResidenceStatus, Tariff,
 } from '../types'
 import { DEFAULT_JOINT_FEE } from '../domain'
@@ -50,6 +50,15 @@ type OpeningArrearsRow = {
   cutoff_date: string
   original_amount: number | string
   notes: string | null
+}
+
+type OpeningArrearsPaymentRow = {
+  id: string
+  opening_arrears_item_id: string
+  payment_date: string
+  amount: number | string
+  payment_method?: string | null
+  notes?: string | null
 }
 
 type ExpenseRow = {
@@ -123,6 +132,19 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     debtorRole: row.debtor_role,
     cutoffDate: row.cutoff_date,
     originalAmount: Number(row.original_amount),
+    notes: row.notes ?? '',
+  }))
+  const publicArrearsPaymentFields = 'id,opening_arrears_item_id,payment_date,amount'
+  const arrearsPaymentsResult = await client.from('opening_arrears_payments')
+    .select(sessionData.session ? '*' : publicArrearsPaymentFields)
+    .order('payment_date', { ascending: false })
+  if (arrearsPaymentsResult.error) throw arrearsPaymentsResult.error
+  const openingArrearsPayments: OpeningArrearsPayment[] = (arrearsPaymentsResult.data as unknown as OpeningArrearsPaymentRow[]).map((row) => ({
+    id: row.id,
+    openingArrearsItemId: row.opening_arrears_item_id,
+    paymentDate: row.payment_date,
+    amount: Number(row.amount),
+    method: row.payment_method ?? '',
     notes: row.notes ?? '',
   }))
   if (sessionData.session) {
@@ -208,6 +230,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     houses,
     houseOccupancies,
     openingArrearsItems,
+    openingArrearsPayments,
     tariffs,
     payments,
     expenses,
@@ -416,6 +439,34 @@ export async function createRemoteOpeningArrearsItem(item: OpeningArrearsItem) {
 
 export async function deleteRemoteOpeningArrearsItem(id: string) {
   const { error } = await requireClient().from('opening_arrears_items').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function createRemoteOpeningArrearsPayment(payment: OpeningArrearsPayment) {
+  const { error } = await requireClient().from('opening_arrears_payments').insert({
+    id: payment.id,
+    opening_arrears_item_id: payment.openingArrearsItemId,
+    payment_date: payment.paymentDate,
+    amount: payment.amount,
+    payment_method: payment.method,
+    notes: payment.notes || null,
+  })
+  if (error) throw error
+}
+
+export async function updateRemoteOpeningArrearsPayment(payment: OpeningArrearsPayment) {
+  const { error } = await requireClient().from('opening_arrears_payments').update({
+    opening_arrears_item_id: payment.openingArrearsItemId,
+    payment_date: payment.paymentDate,
+    amount: payment.amount,
+    payment_method: payment.method,
+    notes: payment.notes || null,
+  }).eq('id', payment.id)
+  if (error) throw error
+}
+
+export async function deleteRemoteOpeningArrearsPayment(id: string) {
+  const { error } = await requireClient().from('opening_arrears_payments').delete().eq('id', id)
   if (error) throw error
 }
 

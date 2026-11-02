@@ -135,8 +135,15 @@ export function statementForAccount(
   const arrearsPaid = accountPayments
     .filter((payment) => payment.month <= activeMonth)
     .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+  const dedicatedOpeningArrearsPaid = data.openingArrearsPayments
+    .filter((payment) => payment.paymentDate.slice(0, 7) <= activeMonth)
+    .filter((payment) => {
+      const item = data.openingArrearsItems.find((arrears) => arrears.id === payment.openingArrearsItemId)
+      return item?.houseId != null && account.houseIds.includes(item.houseId)
+    })
+    .reduce((sum, payment) => sum + payment.amount, 0)
   const currentBalance = Math.max(monthlyDue - paidThisPeriod, 0)
-  const arrearsBalance = Math.max(priorCharges - priorMandatoryPaid - arrearsPaid, 0)
+  const arrearsBalance = Math.max(priorCharges - priorMandatoryPaid - arrearsPaid - dedicatedOpeningArrearsPaid, 0)
   const totalOutstanding = currentBalance + arrearsBalance
 
   return {
@@ -154,12 +161,18 @@ export function cashSummary(data: LedgerData, activeMonth: string, asOfDate: str
   const monthIncome = data.payments
     .filter((payment) => payment.paymentDate.startsWith(activeMonth) && payment.paymentDate <= asOfDate)
     .reduce((sum, payment) => sum + paymentTotal(payment), 0)
+    + data.openingArrearsPayments
+      .filter((payment) => payment.paymentDate.startsWith(activeMonth) && payment.paymentDate <= asOfDate)
+      .reduce((sum, payment) => sum + payment.amount, 0)
   const monthExpenses = data.expenses
     .filter((expense) => expense.date.startsWith(activeMonth) && expense.date <= asOfDate)
     .reduce((sum, expense) => sum + expense.amount, 0)
   const allIncome = data.payments
     .filter((payment) => payment.paymentDate <= asOfDate)
     .reduce((sum, payment) => sum + paymentTotal(payment), 0)
+    + data.openingArrearsPayments
+      .filter((payment) => payment.paymentDate <= asOfDate)
+      .reduce((sum, payment) => sum + payment.amount, 0)
   const allExpenses = data.expenses
     .filter((expense) => expense.date <= asOfDate)
     .reduce((sum, expense) => sum + expense.amount, 0)

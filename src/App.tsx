@@ -13,15 +13,15 @@ import {
 } from './domain'
 import {
   createRemoteExpense, createRemoteOccupancy, createRemoteOpeningArrearsItem, createRemotePayments,
-  createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
-  deleteRemoteOccupancy, deleteRemoteOpeningArrearsItem, deleteRemotePayment,
+  createRemoteOpeningArrearsPayment, createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
+  deleteRemoteOccupancy, deleteRemoteOpeningArrearsItem, deleteRemoteOpeningArrearsPayment, deleteRemotePayment,
   deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
-  setRemoteOpeningArrearsTotal, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
+  setRemoteOpeningArrearsTotal, updateRemoteOpeningArrearsPayment, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
   AdminView, ArrearsDebtorRole, BillingAccount, Expense, House, HouseOccupancy, LedgerData,
-  OpeningArrearsItem, Payment, PendingPaymentMonth, PublicView, ReceivableTransaction,
+  OpeningArrearsItem, OpeningArrearsPayment, Payment, PendingPaymentMonth, PublicView, ReceivableTransaction,
   ResidenceStatus, Tariff,
 } from './types'
 
@@ -30,6 +30,11 @@ const now = new Date()
 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 const currentMonth = today.slice(0, 7)
 const pageOpenedLabel = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }).format(now)
+const paymentYears = Array.from({ length: 10 }, (_, index) => 2026 + index)
+const paymentMonths = Array.from({ length: 12 }, (_, index) => ({
+  value: String(index + 1).padStart(2, '0'),
+  label: new Intl.DateTimeFormat('id-ID', { month: 'long' }).format(new Date(2026, index, 1)),
+}))
 
 const nextMonthValue = (month: string) => {
   const [year, monthNumber] = month.split('-').map(Number)
@@ -63,7 +68,7 @@ const seedHouses: House[] = people.map((owner, index) => {
 })
 
 const seedLedger: LedgerData = {
-  houses: seedHouses, houseOccupancies: [], openingArrearsItems: [],
+  houses: seedHouses, houseOccupancies: [], openingArrearsItems: [], openingArrearsPayments: [],
   tariffs: [{ id: 'initial', effectiveDate: '2026-01-01', occupiedFee: DEFAULT_OCCUPIED_FEE, emptyFee: DEFAULT_EMPTY_FEE, notes: 'Tarif awal CSJ' }],
   payments: [], expenses: [], receivableTransactions: [], openingCashBalance: 0, jointFee0203: DEFAULT_JOINT_FEE,
   bankName: 'Bank Neo Commerce', bankAccountNumber: '5859457243882555', bankAccountHolder: 'Suwondo',
@@ -109,7 +114,7 @@ const legacyExpenseDetail: Record<string, string> = {
 type CashJournalEntry = {
   id: string
   entityId: string
-  entityType: 'payment-dues' | 'payment-other' | 'expense' | 'receivable'
+  entityType: 'payment-dues' | 'payment-other' | 'opening-arrears' | 'expense' | 'receivable'
   date: string
   source: 'Penerimaan' | 'Pengeluaran' | 'Piutang'
   category: string
@@ -213,11 +218,17 @@ function App() {
     houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
     cutoffDate: '2025-12-31', originalAmount: '', notes: '',
   })
+  const [arrearsPaymentForm, setArrearsPaymentForm] = useState({
+    openingArrearsItemId: '', paymentDate: today, amount: '', method: 'Transfer', notes: '',
+  })
   const [occupancyForm, setOccupancyForm] = useState({
     houseId: '1', occupantName: '', occupantRole: 'tenant' as 'owner' | 'tenant',
     startDate: '2025-01-01', endDate: '2025-12-31', notes: '',
   })
   const [journalQuery, setJournalQuery] = useState('')
+  const [journalYear, setJournalYear] = useState('all')
+  const [journalMonth, setJournalMonth] = useState('all')
+  const [journalSort, setJournalSort] = useState<'asc' | 'desc'>('asc')
   const [journalEdit, setJournalEdit] = useState<JournalEditForm | null>(null)
 
   const loadData = async () => {
@@ -228,6 +239,7 @@ function App() {
         ...loadedLedger,
         houseOccupancies: loadedLedger.houseOccupancies ?? [],
         openingArrearsItems: loadedLedger.openingArrearsItems ?? [],
+        openingArrearsPayments: loadedLedger.openingArrearsPayments ?? [],
         receivableTransactions: loadedLedger.receivableTransactions ?? [],
         pendingPaymentMonths: (loadedLedger.pendingPaymentMonths ?? []).filter((item: PendingPaymentMonth) =>
           !(item.houseId === 4 && item.month === '2026-04'),
@@ -260,20 +272,33 @@ function App() {
   const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
   const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
   const openingArrearsBalances = useMemo(() => data.openingArrearsItems.map((item) => {
-    const settled = data.payments
+    const legacySettled = data.payments
       .filter((payment) => payment.openingArrearsItemId === item.id)
       .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+    const dedicatedSettled = data.openingArrearsPayments
+      .filter((payment) => payment.openingArrearsItemId === item.id)
+      .reduce((sum, payment) => sum + payment.amount, 0)
+    const settled = legacySettled + dedicatedSettled
     return { ...item, settled, outstanding: Math.max(item.originalAmount - settled, 0) }
-  }), [data.openingArrearsItems, data.payments])
+  }), [data.openingArrearsItems, data.openingArrearsPayments, data.payments])
   const selectedOpeningArrearsItems = openingArrearsBalances.filter((item) =>
     item.houseId !== null && selected.houseIds.includes(item.houseId) && item.outstanding > 0,
   )
   const totalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.outstanding, 0)
   const publicOpeningArrears = [...openingArrearsBalances]
-    .filter((item) => item.outstanding > 0)
+    .filter((item) => item.originalAmount > 0)
     .sort((a, b) => b.outstanding - a.outstanding || a.debtorName.localeCompare(b.debtorName))
+  const outstandingOpeningArrearsCount = publicOpeningArrears.filter((item) => item.outstanding > 0).length
   const originalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.originalAmount, 0)
   const settledTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.settled, 0)
+  const arrearsMovementsFor = (itemId: string) => [
+    ...data.payments
+      .filter((payment) => payment.openingArrearsItemId === itemId && payment.arrearsAmount > 0)
+      .map((payment) => ({ id: payment.id, date: payment.paymentDate, amount: payment.arrearsAmount, method: payment.method, notes: payment.notes })),
+    ...data.openingArrearsPayments
+      .filter((payment) => payment.openingArrearsItemId === itemId)
+      .map((payment) => ({ id: payment.id, date: payment.paymentDate, amount: payment.amount, method: payment.method, notes: payment.notes })),
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
   const otherFunds = useMemo(() => {
     const categoryBalances = new Map(otherFundCategories.map((category) => [category, 0]))
     const accountBalances = new Map<string, Map<string, number>>()
@@ -344,6 +369,7 @@ function App() {
   const availableReportYears = useMemo(() => {
     const transactionYears = [
       ...data.payments.map((payment) => Number(payment.paymentDate.slice(0, 4))),
+      ...data.openingArrearsPayments.map((payment) => Number(payment.paymentDate.slice(0, 4))),
       ...data.expenses.map((expense) => Number(expense.date.slice(0, 4))),
       ...data.receivableTransactions.map((transaction) => Number(transaction.date.slice(0, 4))),
     ].filter(Number.isFinite)
@@ -354,9 +380,11 @@ function App() {
     const reportStart = `${reportYear}-01-01`
     const reportEnd = reportYear < now.getFullYear() ? `${reportYear}-12-31` : today
     const payments = data.payments.filter((payment) => payment.paymentDate >= reportStart && payment.paymentDate <= reportEnd)
+    const openingArrearsPayments = data.openingArrearsPayments.filter((payment) => payment.paymentDate >= reportStart && payment.paymentDate <= reportEnd)
     const expenses = data.expenses.filter((expense) => expense.date >= reportStart && expense.date <= reportEnd && (legacyExpenseCategory[expense.category] ?? expense.category) !== 'Piutang')
     const mandatoryIncome = payments.reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
     const arrearsIncome = payments.reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+      + openingArrearsPayments.reduce((sum, payment) => sum + payment.amount, 0)
     const otherIncome = payments.reduce((sum, payment) => sum + payment.extraAmount, 0)
     const otherBreakdown = new Map<string, number>()
     payments.forEach((payment) => {
@@ -394,6 +422,7 @@ function App() {
     const periodRepayments = periodReceivables.filter((transaction) => transaction.transactionType === 'repayment').reduce((sum, transaction) => sum + transaction.amount, 0)
     const cumulativePayments = data.payments.filter((payment) => payment.paymentDate <= reportEnd)
     const cumulativeIncome = cumulativePayments.reduce((sum, payment) => sum + payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount, 0)
+      + data.openingArrearsPayments.filter((payment) => payment.paymentDate <= reportEnd).reduce((sum, payment) => sum + payment.amount, 0)
     const cumulativeExpenses = data.expenses.filter((expense) => expense.date <= reportEnd && (legacyExpenseCategory[expense.category] ?? expense.category) !== 'Piutang').reduce((sum, expense) => sum + expense.amount, 0)
     const cumulativeReceivableCashFlow = receivablesToDate.reduce((sum, transaction) => sum + receivableCashMovement(transaction), 0)
     return {
@@ -439,6 +468,18 @@ function App() {
       })
     })
 
+    data.openingArrearsPayments.filter((payment) => payment.paymentDate <= today).forEach((payment) => {
+      const item = data.openingArrearsItems.find((arrears) => arrears.id === payment.openingArrearsItemId)
+      entries.push({
+        id: payment.id, entityId: payment.id, entityType: 'opening-arrears',
+        date: payment.paymentDate, source: 'Penerimaan',
+        category: 'Pelunasan Tunggakan s.d. 2025',
+        detail: item?.debtorName ?? 'Debitur tidak ditemukan',
+        description: `${item?.houseId ? accountCodeForHouse(item.houseId) : 'Rumah lama belum diketahui'}${payment.method ? ` · ${payment.method}` : ''}${payment.notes ? ` · ${payment.notes}` : ''}`,
+        cashIn: payment.amount, cashOut: 0,
+      })
+    })
+
     data.expenses.filter((expense) => expense.date <= today).forEach((expense) => entries.push({
       id: expense.id, entityId: expense.id, entityType: 'expense',
       date: expense.date, source: 'Pengeluaran',
@@ -469,13 +510,17 @@ function App() {
       closingBalance: rows.at(-1)?.runningBalance ?? data.openingCashBalance,
     }
   }, [accounts, data])
+  const journalYears = useMemo(() => Array.from(new Set(cashJournal.rows.map((entry) => entry.date.slice(0, 4)))).sort(), [cashJournal.rows])
   const filteredJournalRows = useMemo(() => {
     const query = journalQuery.trim().toLowerCase()
-    if (!query) return cashJournal.rows
-    return cashJournal.rows.filter((entry) =>
-      `${entry.date} ${entry.source} ${entry.category} ${entry.detail} ${entry.description}`.toLowerCase().includes(query),
-    )
-  }, [cashJournal.rows, journalQuery])
+    return cashJournal.rows
+      .filter((entry) => journalYear === 'all' || entry.date.startsWith(`${journalYear}-`))
+      .filter((entry) => journalMonth === 'all' || entry.date.slice(5, 7) === journalMonth)
+      .filter((entry) => !query || `${entry.date} ${entry.source} ${entry.category} ${entry.detail} ${entry.description}`.toLowerCase().includes(query))
+      .sort((a, b) => journalSort === 'asc'
+        ? a.date.localeCompare(b.date) || a.id.localeCompare(b.id)
+        : b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+  }, [cashJournal.rows, journalMonth, journalQuery, journalSort, journalYear])
 
   const outstandingForPeriod = (account: BillingAccount, month: string) => {
     const due = monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
@@ -486,6 +531,14 @@ function App() {
   }
 
   const updatePaymentPeriod = (index: number, month: string) => {
+    const existingPayment = data.payments.find((payment) =>
+      selected.houseIds.includes(payment.houseId) && payment.month === month && payment.mandatoryAmount > 0,
+    )
+    if (existingPayment) {
+      setError(`Pembayaran iuran ${selected.code} untuk ${monthLabel(month)} sudah tercatat. Periode ini tidak dapat diinput kembali.`)
+      return
+    }
+    setError('')
     const mandatory = String(outstandingForPeriod(selected, month))
     setPaymentForm((form) => ({
       ...form,
@@ -493,8 +546,22 @@ function App() {
     }))
   }
 
+  const updatePaymentPeriodPart = (index: number, part: 'year' | 'month', value: string) => {
+    const current = paymentForm.periods[index]?.month ?? activeMonth
+    const [year, month] = current.split('-')
+    updatePaymentPeriod(index, part === 'year' ? `${value}-${month}` : `${year}-${value}`)
+  }
+
   const addPaymentPeriod = () => {
     const month = nextMonthValue(paymentForm.periods.at(-1)?.month ?? activeMonth)
+    const existingPayment = data.payments.find((payment) =>
+      selected.houseIds.includes(payment.houseId) && payment.month === month && payment.mandatoryAmount > 0,
+    )
+    if (existingPayment) {
+      setError(`Pembayaran iuran ${selected.code} untuk ${monthLabel(month)} sudah tercatat. Pilih periode lain.`)
+      return
+    }
+    setError('')
     setPaymentForm((form) => ({
       ...form,
       periods: [...form.periods, { month, mandatory: String(outstandingForPeriod(selected, month)) }],
@@ -586,6 +653,10 @@ function App() {
       const paidPeriods = paymentForm.periods
         .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
         .filter((period) => period.mandatoryAmount > 0)
+      const duplicatePeriod = paidPeriods.find((period) => data.payments.some((payment) =>
+        selected.houseIds.includes(payment.houseId) && payment.month === period.month && payment.mandatoryAmount > 0,
+      ))
+      if (duplicatePeriod) { setError(`Pembayaran iuran ${selected.code} untuk ${monthLabel(duplicatePeriod.month)} sudah tercatat dan tidak dapat diinput kembali.`); return }
       const recordedPeriods = paidPeriods.length ? paidPeriods : [{ month: paymentForm.periods[0].month, mandatoryAmount: 0 }]
       if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) + arrearsAmount <= 0) { setError('Jumlah penerimaan iuran harus lebih dari nol.'); return }
       payments = recordedPeriods.map((period, index) => ({
@@ -677,6 +748,11 @@ function App() {
       if (payment) await removePayment(payment)
       return
     }
+    if (entry.entityType === 'opening-arrears') {
+      const payment = data.openingArrearsPayments.find((item) => item.id === entry.entityId)
+      if (payment) await removeOpeningArrearsPayment(payment)
+      return
+    }
     if (entry.entityType === 'expense') {
       const expense = data.expenses.find((item) => item.id === entry.entityId)
       if (expense) await removeExpense(expense)
@@ -703,6 +779,12 @@ function App() {
         extraAmount: String(payment.extraAmount), extraType: payment.extraType,
         method: payment.method || 'Transfer', notes: payment.notes,
       })
+      return
+    }
+    if (entry.entityType === 'opening-arrears') {
+      const payment = data.openingArrearsPayments.find((item) => item.id === entry.entityId)
+      if (!payment) return
+      setJournalEdit({ ...base, date: payment.paymentDate, amount: String(payment.amount), method: payment.method || 'Transfer', notes: payment.notes })
       return
     }
     if (entry.entityType === 'expense') {
@@ -737,6 +819,17 @@ function App() {
         if (editedAmount <= 0) throw new Error('Nilai penerimaan harus lebih dari nol.')
         if (supabaseConfigured) await updateRemotePayment(next)
         setData((current) => ({ ...current, payments: current.payments.map((item) => item.id === next.id ? next : item) }))
+      } else if (journalEdit.entry.entityType === 'opening-arrears') {
+        const original = data.openingArrearsPayments.find((item) => item.id === journalEdit.entry.entityId)
+        if (!original) throw new Error('Pembayaran tunggakan tidak ditemukan.')
+        const amount = Number(journalEdit.amount)
+        const balance = openingArrearsBalances.find((item) => item.id === original.openingArrearsItemId)
+        const available = (balance?.outstanding ?? 0) + original.amount
+        if (amount <= 0) throw new Error('Nilai pembayaran tunggakan harus lebih dari nol.')
+        if (amount > available) throw new Error(`Pembayaran melebihi saldo tersedia sebesar ${rupiah.format(available)}.`)
+        const next: OpeningArrearsPayment = { ...original, paymentDate: journalEdit.date, amount, method: journalEdit.method, notes: journalEdit.notes }
+        if (supabaseConfigured) await updateRemoteOpeningArrearsPayment(next)
+        setData((current) => ({ ...current, openingArrearsPayments: current.openingArrearsPayments.map((item) => item.id === next.id ? next : item) }))
       } else if (journalEdit.entry.entityType === 'expense') {
         const amount = Number(journalEdit.amount)
         if (amount <= 0) throw new Error('Nilai pengeluaran harus lebih dari nol.')
@@ -820,6 +913,35 @@ function App() {
       else setData((current) => ({ ...current, openingArrearsItems: current.openingArrearsItems.filter((row) => row.id !== item.id) }))
       flash('Rincian tunggakan dihapus.')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Rincian tunggakan gagal dihapus.') }
+  }
+
+  const saveOpeningArrearsPayment = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const item = openingArrearsBalances.find((row) => row.id === arrearsPaymentForm.openingArrearsItemId)
+    const amount = Number(arrearsPaymentForm.amount)
+    if (!item) { setError('Pilih debitur tunggakan yang melakukan pembayaran.'); return }
+    if (amount <= 0) { setError('Nilai pembayaran harus lebih dari nol.'); return }
+    if (amount > item.outstanding) { setError(`Pembayaran melebihi saldo outstanding ${item.debtorName} sebesar ${rupiah.format(item.outstanding)}.`); return }
+    const payment: OpeningArrearsPayment = {
+      id: crypto.randomUUID(), openingArrearsItemId: item.id,
+      paymentDate: arrearsPaymentForm.paymentDate, amount,
+      method: arrearsPaymentForm.method, notes: arrearsPaymentForm.notes.trim(),
+    }
+    try {
+      if (supabaseConfigured) await createRemoteOpeningArrearsPayment(payment)
+      setData((current) => ({ ...current, openingArrearsPayments: [payment, ...current.openingArrearsPayments] }))
+      setArrearsPaymentForm((form) => ({ ...form, amount: '', notes: '' }))
+      flash(`Pembayaran tunggakan ${item.debtorName} berhasil dicatat.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran tunggakan gagal disimpan.') }
+  }
+
+  const removeOpeningArrearsPayment = async (payment: OpeningArrearsPayment) => {
+    if (!window.confirm('Hapus pembayaran tunggakan ini? Saldo outstanding dan kas akan dihitung ulang.')) return
+    try {
+      if (supabaseConfigured) await deleteRemoteOpeningArrearsPayment(payment.id)
+      setData((current) => ({ ...current, openingArrearsPayments: current.openingArrearsPayments.filter((row) => row.id !== payment.id) }))
+      flash('Pembayaran tunggakan dihapus dan saldo dihitung ulang.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran tunggakan gagal dihapus.') }
   }
 
   const saveOccupancy = async (event: FormEvent) => {
@@ -968,7 +1090,7 @@ function App() {
       {publicView === 'opening-arrears' && <div className="page-stack opening-arrears-public-page">
         <section className="arrears-public-hero">
           <div><span>Posisi historis</span><h2>Tunggakan Outstanding s.d. 31 Desember 2025</h2><p>Rincian kewajiban lama berdasarkan pihak yang bertanggung jawab. Pembayaran tunggakan akan langsung mengurangi saldo outstanding debitur terkait.</p></div>
-          <div><span>Total outstanding</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong><small>{publicOpeningArrears.length} pihak masih memiliki saldo</small></div>
+          <div><span>Total outstanding</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong><small>{outstandingOpeningArrearsCount} pihak masih memiliki saldo</small></div>
         </section>
         <section className="arrears-public-summary">
           <article><span>Nilai awal tercatat</span><strong>{rupiah.format(originalTrackedOpeningArrears)}</strong></article>
@@ -977,8 +1099,13 @@ function App() {
         </section>
         <section className="panel arrears-public-panel">
           <div className="panel-title"><div><span>Daftar debitur</span><h3>Rincian Tunggakan Lama</h3><p>Urutan berdasarkan nilai outstanding terbesar. Nomor rumah lama ditampilkan jika sudah diketahui.</p></div></div>
-          <div className="table-wrap"><table className="public-arrears-table"><thead><tr><th>Rumah</th><th>Nama yang bertanggung jawab</th><th>Status</th><th>Nilai awal</th><th>Sudah dibayar</th><th>Outstanding</th></tr></thead><tbody>{publicOpeningArrears.length ? publicOpeningArrears.map((item) => <tr key={item.id}><td>{item.houseId ? <strong>{data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}`}</strong> : <span className="unlinked-label">Rumah lama belum diketahui</span>}</td><td><strong>{item.debtorName}</strong></td><td>{arrearsDebtorRoleLabel[item.debtorRole]}</td><td>{rupiah.format(item.originalAmount)}</td><td>{item.settled > 0 ? rupiah.format(item.settled) : '—'}</td><td><strong className="outstanding-amount">{rupiah.format(item.outstanding)}</strong></td></tr>) : <tr><td colSpan={6}><div className="empty-state">Tidak ada tunggakan outstanding sampai 31 Desember 2025.</div></td></tr>}</tbody><tfoot><tr><td colSpan={3}>Total</td><td>{rupiah.format(originalTrackedOpeningArrears)}</td><td>{rupiah.format(settledTrackedOpeningArrears)}</td><td><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></td></tr></tfoot></table></div>
+          <div className="table-wrap"><table className="public-arrears-table"><thead><tr><th>Rumah</th><th>Nama yang bertanggung jawab</th><th>Status pihak</th><th>Status pembayaran</th><th>Nilai awal</th><th>Sudah dibayar</th><th>Outstanding</th></tr></thead><tbody>{publicOpeningArrears.length ? publicOpeningArrears.map((item) => <tr key={item.id}><td>{item.houseId ? <strong>{data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}`}</strong> : <span className="unlinked-label">Rumah lama belum diketahui</span>}</td><td><strong>{item.debtorName}</strong></td><td>{arrearsDebtorRoleLabel[item.debtorRole]}</td><td><span className={`mini-status ${item.outstanding === 0 ? 'paid' : 'due'}`}>{item.outstanding === 0 ? 'Lunas' : item.settled > 0 ? 'Dibayar sebagian' : 'Belum bayar'}</span></td><td>{rupiah.format(item.originalAmount)}</td><td>{item.settled > 0 ? rupiah.format(item.settled) : '—'}</td><td><strong className={item.outstanding > 0 ? 'outstanding-amount' : ''}>{rupiah.format(item.outstanding)}</strong></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Tidak ada data tunggakan sampai 31 Desember 2025.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total</td><td>{rupiah.format(originalTrackedOpeningArrears)}</td><td>{rupiah.format(settledTrackedOpeningArrears)}</td><td><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></td></tr></tfoot></table></div>
         </section>
+        <section className="panel arrears-movement-panel"><div className="panel-title"><div><span>Pergerakan saldo</span><h3>Mutasi Pembayaran per Debitur</h3><p>Buka nama debitur untuk melihat tanggal pembayaran dan saldo outstanding setelah setiap transaksi.</p></div></div><div className="arrears-movement-list">{publicOpeningArrears.map((item) => {
+          const movements = arrearsMovementsFor(item.id)
+          let running = item.originalAmount
+          return <details className="arrears-movement-detail" key={item.id}><summary><span><strong>{item.debtorName}</strong><small>{item.houseId ? data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}` : 'Rumah lama belum diketahui'}</small></span><span className={`mini-status ${item.outstanding === 0 ? 'paid' : 'due'}`}>{item.outstanding === 0 ? 'Lunas' : item.settled > 0 ? 'Sebagian' : 'Belum bayar'}</span><strong>{rupiah.format(item.outstanding)}</strong></summary><div className="table-wrap"><table className="arrears-movement-table"><thead><tr><th>Tanggal</th><th>Keterangan</th><th>Pembayaran</th><th>Saldo</th></tr></thead><tbody><tr><td>31 Des 2025</td><td>Saldo awal tunggakan</td><td>—</td><td><strong>{rupiah.format(item.originalAmount)}</strong></td></tr>{movements.map((movement) => { running = Math.max(running - movement.amount, 0); return <tr key={movement.id}><td>{movement.date}</td><td>{movement.method || 'Pembayaran'}{movement.notes ? ` · ${movement.notes}` : ''}</td><td className="amount-in">{rupiah.format(movement.amount)}</td><td><strong>{rupiah.format(running)}</strong></td></tr> })}</tbody></table></div></details>
+        })}</div></section>
       </div>}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
@@ -1003,7 +1130,7 @@ function App() {
               <div className="payment-periods wide">
                 <div className="payment-period-heading"><div><strong>Periode pembayaran</strong><span>Pilih bulan dan tahun. Tambahkan baris jika satu transaksi membayar beberapa bulan.</span></div><button className="secondary-action" type="button" onClick={addPaymentPeriod}><Plus size={16} />Tambah periode</button></div>
                 {paymentForm.periods.map((period, index) => <div className="payment-period-row" key={`${index}-${period.month}`}>
-                  <label>Bulan & tahun<input type="month" min="2026-01" required value={period.month} onChange={(event) => updatePaymentPeriod(index, event.target.value)} /></label>
+                  <div className="payment-period-date"><label>Bulan<select value={period.month.slice(5, 7)} onChange={(event) => updatePaymentPeriodPart(index, 'month', event.target.value)}>{paymentMonths.map((month) => <option key={month.value} value={month.value}>{month.label}</option>)}</select></label><label>Tahun<select value={period.month.slice(0, 4)} onChange={(event) => updatePaymentPeriodPart(index, 'year', event.target.value)}>{paymentYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label></div>
                   <label>Iuran periode<input type="number" min="0" step="1000" value={period.mandatory} onChange={(event) => setPaymentForm((form) => ({ ...form, periods: form.periods.map((item, periodIndex) => periodIndex === index ? { ...item, mandatory: event.target.value } : item) }))} /></label>
                   <button aria-label={`Hapus periode ${monthLabel(period.month)}`} className="icon-button danger" disabled={paymentForm.periods.length === 1} onClick={() => removePaymentPeriod(index)} title="Hapus periode" type="button"><Trash2 size={16} /></button>
                 </div>)}
@@ -1065,18 +1192,29 @@ function App() {
         </>}
 
         {adminView === 'journal' && <>
-          <div className="admin-heading journal-heading"><div><span>Kontrol rekening koran</span><h2>Jurnal Kas Terpadu</h2><p>Seluruh pergerakan uang disusun dari tanggal terlama ke terbaru sampai {pageOpenedLabel}.</p></div><label className="journal-search"><Search size={16} /><input placeholder="Cari tanggal, kategori, atau keterangan…" value={journalQuery} onChange={(event) => setJournalQuery(event.target.value)} /></label></div>
+          <div className="admin-heading journal-heading"><div><span>Kontrol rekening koran</span><h2>Jurnal Kas Terpadu</h2><p>Filter tahun dan bulan untuk memperpendek tampilan, lalu pilih urutan transaksi.</p></div><div className="journal-controls"><label>Tahun<select value={journalYear} onChange={(event) => setJournalYear(event.target.value)}><option value="all">Semua tahun</option>{journalYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label><label>Bulan<select value={journalMonth} onChange={(event) => setJournalMonth(event.target.value)}><option value="all">Semua bulan</option>{paymentMonths.map((month) => <option key={month.value} value={month.value}>{month.label}</option>)}</select></label><label>Urutan<select value={journalSort} onChange={(event) => setJournalSort(event.target.value as 'asc' | 'desc')}><option value="asc">Terlama → terbaru</option><option value="desc">Terbaru → terlama</option></select></label><label className="journal-search"><Search size={16} /><input placeholder="Cari transaksi…" value={journalQuery} onChange={(event) => setJournalQuery(event.target.value)} /></label></div></div>
           <section className="journal-summary-grid">
             <article><span>Saldo awal kas</span><strong>{rupiah.format(data.openingCashBalance)}</strong></article>
             <article className="cash-in"><span>Total kas masuk</span><strong>{rupiah.format(cashJournal.totalCashIn)}</strong></article>
             <article className="cash-out"><span>Total kas keluar</span><strong>{rupiah.format(cashJournal.totalCashOut)}</strong></article>
             <article className="closing"><span>Saldo akhir berjalan</span><strong>{rupiah.format(cashJournal.closingBalance)}</strong><small>{cashJournal.closingBalance === cash.cashBalance ? '✓ Sesuai saldo Ringkasan' : '⚠ Perlu diperiksa'}</small></article>
           </section>
-          <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan tetap mengikuti seluruh transaksi, termasuk saat hasil pencarian sedang difilter.</p></div><span className="journal-order-badge"><CalendarDays size={14} />Terlama → terbaru</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><div className="journal-row-actions"><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button><button className="icon-button danger" onClick={() => void removeJournalEntry(entry)} title="Hapus catatan jurnal"><Trash2 size={15} /></button></div></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi yang sesuai pencarian.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
+          <section className="panel journal-panel"><div className="panel-title"><div><span>{filteredJournalRows.length} dari {cashJournal.rows.length} transaksi</span><h3>Urutan Transaksi Kas</h3><p>Saldo berjalan selalu dihitung kronologis meskipun urutan tampilan dibalik.</p></div><span className="journal-order-badge"><CalendarDays size={14} />{journalSort === 'asc' ? 'Terlama → terbaru' : 'Terbaru → terlama'}</span></div><div className="table-wrap"><table className="journal-table"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Kategori dan detail</th><th>Keterangan</th><th>Kas masuk</th><th>Kas keluar</th><th>Saldo berjalan</th><th /></tr></thead><tbody>{filteredJournalRows.length ? filteredJournalRows.map((entry) => <tr key={entry.id}><td className="journal-date">{entry.date}</td><td><span className={`journal-source ${entry.source.toLowerCase()}`}>{entry.source}</span></td><td><strong>{entry.category}</strong><small>{entry.detail}</small></td><td>{entry.description}</td><td className="amount-in">{entry.cashIn ? rupiah.format(entry.cashIn) : '—'}</td><td className="amount-out">{entry.cashOut ? rupiah.format(entry.cashOut) : '—'}</td><td className="running-balance">{rupiah.format(entry.runningBalance)}</td><td><div className="journal-row-actions"><button className="icon-button journal-edit-button" onClick={() => openJournalEdit(entry)} title="Edit catatan jurnal"><Pencil size={15} /></button><button className="icon-button danger" onClick={() => void removeJournalEntry(entry)} title="Hapus catatan jurnal"><Trash2 size={15} /></button></div></td></tr>) : <tr><td colSpan={8}><div className="empty-state">Tidak ada transaksi untuk filter yang dipilih.</div></td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total seluruh transaksi</td><td>{rupiah.format(cashJournal.totalCashIn)}</td><td>{rupiah.format(cashJournal.totalCashOut)}</td><td>{rupiah.format(cashJournal.closingBalance)}</td><td /></tr></tfoot></table></div></section>
         </>}
 
         {adminView === 'opening-arrears' && <>
           <div className="admin-heading"><div><span>Kontrol tunggakan historis</span><h2>Tunggakan s.d. 31 Desember 2025</h2><p>Kelola saldo per akun dan pihak yang bertanggung jawab secara terpisah dari data penghuni saat ini.</p></div><div className="admin-stat"><span>Sisa tunggakan tercatat</span><strong>{rupiah.format(totalTrackedOpeningArrears)}</strong></div></div>
+          <div className="admin-two-column arrears-payment-entry">
+            <section className="panel form-card"><div className="panel-title"><div><span>Kas masuk tunggakan lama</span><h3>Input Pembayaran Tunggakan</h3><p>Pembayaran akan menambah saldo kas dan mengurangi outstanding debitur.</p></div></div><form className="form-grid" onSubmit={saveOpeningArrearsPayment}>
+              <label className="wide">Pihak yang membayar<select required value={arrearsPaymentForm.openingArrearsItemId} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, openingArrearsItemId: event.target.value })}><option value="">Pilih debitur tunggakan</option>{openingArrearsBalances.filter((item) => item.outstanding > 0).map((item) => <option key={item.id} value={item.id}>{item.debtorName} · sisa {rupiah.format(item.outstanding)}</option>)}</select></label>
+              <label>Tanggal pembayaran<input type="date" required value={arrearsPaymentForm.paymentDate} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, paymentDate: event.target.value })} /></label>
+              <label>Metode<select value={arrearsPaymentForm.method} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
+              <label>Nilai pembayaran<input type="number" min="0" step="1000" required value={arrearsPaymentForm.amount} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, amount: event.target.value })} /></label>
+              <label>Catatan<input placeholder="Opsional" value={arrearsPaymentForm.notes} onChange={(event) => setArrearsPaymentForm({ ...arrearsPaymentForm, notes: event.target.value })} /></label>
+              <button className="primary-action wide" type="submit"><Plus size={18} />Simpan pembayaran tunggakan</button>
+            </form></section>
+            <section className="panel arrears-payment-history"><div className="panel-title"><div><span>Riwayat kas masuk</span><h3>Pembayaran Terakhir</h3><p>Gunakan Jurnal Kas untuk mengedit; tombol sampah tetap tersedia untuk menghapus.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Debitur</th><th>Nilai</th><th /></tr></thead><tbody>{data.openingArrearsPayments.length ? [...data.openingArrearsPayments].sort((a, b) => b.paymentDate.localeCompare(a.paymentDate)).map((payment) => { const item = data.openingArrearsItems.find((row) => row.id === payment.openingArrearsItemId); return <tr key={payment.id}><td>{payment.paymentDate}</td><td><strong>{item?.debtorName ?? 'Tidak ditemukan'}</strong><small className="payment-method-note">{payment.method || '—'}</small></td><td>{rupiah.format(payment.amount)}</td><td><button className="icon-button danger" type="button" onClick={() => void removeOpeningArrearsPayment(payment)} title="Hapus pembayaran tunggakan"><Trash2 size={15} /></button></td></tr> }) : <tr><td colSpan={4}><div className="empty-state">Belum ada pembayaran tunggakan lama.</div></td></tr>}</tbody></table></div></section>
+          </div>
           <section className="panel opening-arrears-panel">
             <div className="panel-title"><div><span>Kontrol saldo per akun</span><h3>Tagihan s.d. 31 Desember 2025</h3><p>Kosongkan kolom untuk menyimpan Rp0. Nilai tidak boleh lebih kecil dari rincian debitur yang sudah dialokasikan.</p></div></div>
             <div className="opening-arrears-grid">{accounts.map((account) => <label key={account.id}><span>{account.code}</span><div><input type="number" min="0" step="1000" placeholder="0" value={openingArrearsDrafts[account.id] ?? (account.openingArrears === 0 ? '' : String(account.openingArrears))} onChange={(event) => setOpeningArrearsDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /><button className="small-action" type="button" onClick={() => void saveOpeningArrears(account)}>Simpan</button></div></label>)}</div>
@@ -1150,6 +1288,7 @@ function App() {
         {journalEdit.entry.entityType === 'payment-dues' && <><label>Iuran periode<input type="number" min="0" step="1000" value={journalEdit.mandatoryAmount} onChange={(event) => setJournalEdit({ ...journalEdit, mandatoryAmount: event.target.value })} /></label><label>Pelunasan tunggakan<input type="number" min="0" step="1000" value={journalEdit.arrearsAmount} onChange={(event) => setJournalEdit({ ...journalEdit, arrearsAmount: event.target.value })} /></label></>}
         {journalEdit.entry.entityType === 'payment-other' && <><label>Jenis penerimaan<select value={journalEdit.extraType} onChange={(event) => setJournalEdit({ ...journalEdit, extraType: event.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label>Nilai penerimaan<input type="number" min="0" step="1000" required value={journalEdit.extraAmount} onChange={(event) => setJournalEdit({ ...journalEdit, extraAmount: event.target.value })} /></label></>}
         {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Metode<select value={journalEdit.method} onChange={(event) => setJournalEdit({ ...journalEdit, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>}
+        {journalEdit.entry.entityType === 'opening-arrears' && <><label>Nilai pembayaran tunggakan<input type="number" min="0" step="1000" required value={journalEdit.amount} onChange={(event) => setJournalEdit({ ...journalEdit, amount: event.target.value })} /></label><label>Metode<select value={journalEdit.method} onChange={(event) => setJournalEdit({ ...journalEdit, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label></>}
         {journalEdit.entry.entityType === 'expense' && <><label>Jenis pembayaran<select value={journalEdit.category} onChange={(event) => { const category = event.target.value; setJournalEdit({ ...journalEdit, category, detail: expenseDetailsByCategory[category][0] }) }}><option>Beban</option><option>Lainnya</option></select></label><label>Detail pengeluaran<select value={journalEdit.detail} onChange={(event) => setJournalEdit({ ...journalEdit, detail: event.target.value })}>{expenseDetailsByCategory[journalEdit.category].map((detail) => <option key={detail}>{detail}</option>)}</select></label><label>Jumlah pengeluaran<input type="number" min="0" step="1000" required value={journalEdit.amount} onChange={(event) => setJournalEdit({ ...journalEdit, amount: event.target.value })} /></label></>}
         {journalEdit.entry.entityType === 'receivable' && <><label>Jenis transaksi<select value={journalEdit.transactionType} onChange={(event) => setJournalEdit({ ...journalEdit, transactionType: event.target.value as 'disbursement' | 'repayment' })}><option value="disbursement">Pemberian Piutang</option><option value="repayment">Penerimaan/Pelunasan Piutang</option></select></label><label>Pihak peminjam<select value={journalEdit.debtor} onChange={(event) => setJournalEdit({ ...journalEdit, debtor: event.target.value })}>{receivableDebtors.map((debtor) => <option key={debtor}>{debtor}</option>)}</select></label><label>Jumlah transaksi<input type="number" min="0" step="1000" required value={journalEdit.amount} onChange={(event) => setJournalEdit({ ...journalEdit, amount: event.target.value })} /></label></>}
         <label className="wide">Keterangan<input placeholder="Opsional" value={journalEdit.notes} onChange={(event) => setJournalEdit({ ...journalEdit, notes: event.target.value })} /></label>
