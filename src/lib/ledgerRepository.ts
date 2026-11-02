@@ -95,6 +95,59 @@ const settingNumber = (settings: Map<string, unknown>, key: string, fallback: nu
   return Number.isFinite(value) ? value : fallback
 }
 
+const publicOccupancyValue = (occupancies: HouseOccupancy[]) => occupancies.map((item) => ({
+  id: item.id,
+  houseId: item.houseId,
+  occupantName: item.occupantName,
+  occupantRole: item.occupantRole,
+  startDate: item.startDate,
+  endDate: item.endDate,
+}))
+
+const publicOccupanciesFromSetting = (value: unknown): HouseOccupancy[] => {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return []
+    const row = item as Record<string, unknown>
+    if (typeof row.id !== 'string'
+      || typeof row.houseId !== 'number'
+      || typeof row.occupantName !== 'string'
+      || (row.occupantRole !== 'owner' && row.occupantRole !== 'tenant')
+      || typeof row.startDate !== 'string') return []
+    return [{
+      id: row.id,
+      houseId: row.houseId,
+      occupantName: row.occupantName,
+      occupantRole: row.occupantRole,
+      startDate: row.startDate,
+      endDate: typeof row.endDate === 'string' ? row.endDate : '',
+      notes: '',
+    }]
+  })
+}
+
+async function syncPublicOccupancyHistory() {
+  const client = requireClient()
+  const { data, error } = await client.from('house_occupancies')
+    .select('id,house_id,occupant_name,occupant_role,start_date,end_date')
+    .order('start_date', { ascending: false })
+  if (error) throw error
+  const occupancies = (data as unknown as OccupancyRow[]).map((row): HouseOccupancy => ({
+    id: row.id,
+    houseId: row.house_id,
+    occupantName: row.occupant_name,
+    occupantRole: row.occupant_role,
+    startDate: row.start_date,
+    endDate: row.end_date ?? '',
+    notes: '',
+  }))
+  const { error: settingError } = await client.from('app_settings').upsert({
+    key: 'public_occupancy_history',
+    value: publicOccupancyValue(occupancies),
+  })
+  if (settingError) throw settingError
+}
+
 export async function loadRemoteLedger(): Promise<LedgerData> {
   const client = requireClient()
   const { data: sessionData } = await client.auth.getSession()
@@ -220,6 +273,10 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
   const settings = new Map(
     (settingsResult.data as SettingRow[]).map((row) => [row.key, row.value]),
   )
+  if (!houseOccupancies.length) {
+    houseOccupancies = publicOccupanciesFromSetting(settings.get('public_occupancy_history'))
+  }
+  if (sessionData.session) await syncPublicOccupancyHistory()
   const pendingSetting = settings.get('pending_payment_months')
   const pendingPaymentMonths = (Array.isArray(pendingSetting)
     ? pendingSetting.filter((item): item is { houseId: number; month: string; notes: string } =>
@@ -410,6 +467,7 @@ export async function updateRemoteHouse(house: House, changeDate = new Date().to
     })
     if (insertError) throw insertError
   }
+  await syncPublicOccupancyHistory()
 }
 
 export async function createRemoteOccupancy(occupancy: HouseOccupancy) {
@@ -423,11 +481,13 @@ export async function createRemoteOccupancy(occupancy: HouseOccupancy) {
     notes: occupancy.notes || null,
   })
   if (error) throw error
+  await syncPublicOccupancyHistory()
 }
 
 export async function deleteRemoteOccupancy(id: string) {
   const { error } = await requireClient().from('house_occupancies').delete().eq('id', id)
   if (error) throw error
+  await syncPublicOccupancyHistory()
 }
 
 export async function createRemoteOpeningArrearsItem(item: OpeningArrearsItem) {
