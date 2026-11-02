@@ -220,7 +220,7 @@ function App() {
     receiptKind: 'dues',
     paymentDate: today,
     periods: [{ month: activeMonth, mandatory: '0' }],
-    arrears: '0', openingArrearsItemId: '', otherPeriod: activeMonth, otherAmount: '',
+    otherPeriod: activeMonth, otherAmount: '',
     extraType: 'Denda', method: 'Transfer', notes: '',
   })
   const [expenseForm, setExpenseForm] = useState({ date: today, category: 'Beban', detail: 'Beban Security', amount: '', description: '' })
@@ -298,9 +298,6 @@ function App() {
     const settled = legacySettled + dedicatedSettled
     return { ...item, settled, outstanding: Math.max(item.originalAmount - settled, 0) }
   }), [data.openingArrearsItems, data.openingArrearsPayments, data.payments])
-  const selectedOpeningArrearsItems = openingArrearsBalances.filter((item) =>
-    item.houseId !== null && selected.houseIds.includes(item.houseId) && item.outstanding > 0,
-  )
   const totalTrackedOpeningArrears = openingArrearsBalances.reduce((sum, item) => sum + item.outstanding, 0)
   const publicOpeningArrears = [...openingArrearsBalances]
     .filter((item) => item.originalAmount > 0)
@@ -690,8 +687,6 @@ function App() {
     setPaymentForm((form) => ({
       ...form,
       periods: [{ month: activeMonth, mandatory: String(statement.currentBalance) }],
-      arrears: String(statement.arrearsBalance),
-      openingArrearsItemId: '',
     }))
   }
 
@@ -756,14 +751,6 @@ function App() {
       const unavailablePeriod = periodMonths.find((month) => !availableReportYears.includes(Number(month.slice(0, 4))))
       if (unavailablePeriod) { setError(`Tahun ${unavailablePeriod.slice(0, 4)} belum dibuka oleh admin.`); return }
       if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
-      const arrearsAmount = Number(paymentForm.arrears)
-      const selectedArrearsItem = selectedOpeningArrearsItems.find((item) => item.id === paymentForm.openingArrearsItemId)
-      if (arrearsAmount > 0 && selectedOpeningArrearsItems.length > 0 && !selectedArrearsItem) {
-        setError('Pilih pihak yang tunggakannya sedang dilunasi.'); return
-      }
-      if (selectedArrearsItem && arrearsAmount > selectedArrearsItem.outstanding) {
-        setError(`Pelunasan melebihi sisa tunggakan ${selectedArrearsItem.debtorName} sebesar ${rupiah.format(selectedArrearsItem.outstanding)}.`); return
-      }
       const paidPeriods = paymentForm.periods
         .map((period) => ({ month: period.month, mandatoryAmount: Number(period.mandatory) }))
         .filter((period) => period.mandatoryAmount > 0)
@@ -772,13 +759,13 @@ function App() {
       ))
       if (duplicatePeriod) { setError(`Pembayaran iuran ${selected.code} untuk ${monthLabel(duplicatePeriod.month)} sudah tercatat dan tidak dapat diinput kembali.`); return }
       const recordedPeriods = paidPeriods.length ? paidPeriods : [{ month: paymentForm.periods[0].month, mandatoryAmount: 0 }]
-      if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) + arrearsAmount <= 0) { setError('Jumlah penerimaan iuran harus lebih dari nol.'); return }
-      payments = recordedPeriods.map((period, index) => ({
+      if (paidPeriods.reduce((sum, period) => sum + period.mandatoryAmount, 0) <= 0) { setError('Jumlah penerimaan iuran harus lebih dari nol.'); return }
+      payments = recordedPeriods.map((period) => ({
         id: crypto.randomUUID(), houseId: selected.houseIds[0], month: period.month,
         paymentDate: paymentForm.paymentDate, mandatoryAmount: period.mandatoryAmount,
-        arrearsAmount: index === 0 ? arrearsAmount : 0,
+        arrearsAmount: 0,
         extraAmount: 0, extraType: 'Tidak ada', method: paymentForm.method, notes: paymentForm.notes,
-        openingArrearsItemId: index === 0 && arrearsAmount > 0 ? paymentForm.openingArrearsItemId || null : null,
+        openingArrearsItemId: null,
       }))
       successMessage = `Penerimaan iuran ${selected.code} untuk ${payments.length} periode berhasil dicatat.`
     }
@@ -787,7 +774,7 @@ function App() {
       setData((current) => ({ ...current, payments: [...payments, ...current.payments] }))
       setPaymentForm((form) => ({
         receiptKind: form.receiptKind, paymentDate: today,
-        periods: [{ month: activeMonth, mandatory: '0' }], arrears: '0', openingArrearsItemId: '',
+        periods: [{ month: activeMonth, mandatory: '0' }],
         otherPeriod: activeMonth, otherAmount: '', extraType: 'Denda', method: 'Transfer', notes: '',
       }))
       flash(successMessage)
@@ -1243,8 +1230,7 @@ function App() {
                 </div>)}
                 <div className="payment-period-total"><span>Total iuran periode terpilih</span><strong>{rupiah.format(paymentPeriodTotal)}</strong></div>
               </div>
-              <label>Bayar tunggakan<input type="number" min="0" step="1000" value={paymentForm.arrears} onChange={(event) => setPaymentForm({ ...paymentForm, arrears: event.target.value })} /></label>
-              {Number(paymentForm.arrears) > 0 && <label>Pihak yang melunasi<select value={paymentForm.openingArrearsItemId} onChange={(event) => setPaymentForm({ ...paymentForm, openingArrearsItemId: event.target.value })}><option value="">{selectedOpeningArrearsItems.length ? 'Pilih debitur tunggakan' : 'Belum ada rincian debitur'}</option>{selectedOpeningArrearsItems.map((item) => <option key={item.id} value={item.id}>{item.debtorName} · {arrearsDebtorRoleLabel[item.debtorRole]} · sisa {rupiah.format(item.outstanding)}</option>)}</select></label>}
+              <div className="dues-entry-note wide"><CircleAlert size={16} /><span>Form ini hanya mencatat iuran wajib untuk periode yang dipilih. Pembayaran tunggakan s.d. 2025 dicatat melalui menu Tunggakan s.d. 2025.</span></div>
               <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })} /></label>
               <button className="primary-action wide" type="submit"><Plus size={18} />Simpan penerimaan iuran{paymentForm.periods.length > 1 ? ` (${paymentForm.periods.length} periode)` : ''}</button>
             </form>
