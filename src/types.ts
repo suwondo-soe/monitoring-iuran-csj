@@ -108,6 +108,7 @@ export type LedgerData = {
   bankName: string
   bankAccountNumber: string
   bankAccountHolder: string
+  reportYearEnd: number
   pendingPaymentMonths: PendingPaymentMonth[]
 }
 

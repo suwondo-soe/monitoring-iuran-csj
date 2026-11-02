@@ -30,7 +30,6 @@ const now = new Date()
 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 const currentMonth = today.slice(0, 7)
 const pageOpenedLabel = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }).format(now)
-const paymentYears = Array.from({ length: 10 }, (_, index) => 2026 + index)
 const paymentMonths = Array.from({ length: 12 }, (_, index) => ({
   value: String(index + 1).padStart(2, '0'),
   label: new Intl.DateTimeFormat('id-ID', { month: 'long' }).format(new Date(2026, index, 1)),
@@ -86,6 +85,7 @@ const seedLedger: LedgerData = {
   tariffs: [{ id: 'initial', effectiveDate: '2026-01-01', occupiedFee: DEFAULT_OCCUPIED_FEE, emptyFee: DEFAULT_EMPTY_FEE, notes: 'Tarif awal CSJ' }],
   payments: [], expenses: [], receivableTransactions: [], openingCashBalance: 0, jointFee0203: DEFAULT_JOINT_FEE,
   bankName: 'Bank Neo Commerce', bankAccountNumber: '5859457243882555', bankAccountHolder: 'Suwondo',
+  reportYearEnd: 2030,
   pendingPaymentMonths: [],
 }
 
@@ -177,6 +177,7 @@ type OtherFundAccountRow = {
   account: BillingAccount
   balances: Map<string, number>
   total: number
+  responsibleNames: string[]
 }
 
 function OtherFundAccountGrid({ rows, selectedId, onSelect }: {
@@ -185,12 +186,12 @@ function OtherFundAccountGrid({ rows, selectedId, onSelect }: {
   onSelect: (account: BillingAccount) => void
 }) {
   return <div className="other-fund-account-grid">
-    {rows.map(({ account, total }) => <button
+    {rows.map(({ account, total, responsibleNames }) => <button
       className={`other-fund-account ${selectedId === account.id ? 'selected' : ''}`}
       key={account.id} onClick={() => onSelect(account)} type="button"
       aria-label={`${account.code}, saldo ${rupiah.format(total)}`}
     >
-      <span>{account.code}</span><strong>{rupiah.format(total)}</strong><small>{account.residentName}</small>
+      <span>{account.code}</span><strong>{rupiah.format(total)}</strong><small>{responsibleNames.join(' · ') || account.residentName}</small>
     </button>)}
   </div>
 }
@@ -212,7 +213,7 @@ function App() {
   const [selectedOtherFundAccountId, setSelectedOtherFundAccountId] = useState('account-01')
   const [recapYear, setRecapYear] = useState(Math.min(2028, Math.max(2026, now.getFullYear())))
   const [reportYear, setReportYear] = useState(Math.max(2026, now.getFullYear()))
-  const [maxReportYear, setMaxReportYear] = useState(Math.max(2028, now.getFullYear()))
+  const [otherFundYear, setOtherFundYear] = useState(Math.max(2026, now.getFullYear()))
   const [copied, setCopied] = useState(false)
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [paymentForm, setPaymentForm] = useState({
@@ -255,6 +256,7 @@ function App() {
         openingArrearsItems: loadedLedger.openingArrearsItems ?? [],
         openingArrearsPayments: loadedLedger.openingArrearsPayments ?? [],
         receivableTransactions: loadedLedger.receivableTransactions ?? [],
+        reportYearEnd: Math.max(2030, loadedLedger.reportYearEnd ?? 2030),
         pendingPaymentMonths: (loadedLedger.pendingPaymentMonths ?? []).filter((item: PendingPaymentMonth) =>
           !(item.houseId === 4 && item.month === '2026-04'),
         ),
@@ -285,6 +287,7 @@ function App() {
   const accounts = useMemo(() => buildBillingAccounts(data.houses), [data.houses])
   const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
   const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
+  const selectedOtherReceiptResponsibility = responsibilityForAccountMonth(selected, data, paymentForm.otherPeriod)
   const openingArrearsBalances = useMemo(() => data.openingArrearsItems.map((item) => {
     const legacySettled = data.payments
       .filter((payment) => payment.openingArrearsItemId === item.id)
@@ -317,11 +320,12 @@ function App() {
     const categoryBalances = new Map(otherFundCategories.map((category) => [category, 0]))
     const accountBalances = new Map<string, Map<string, number>>()
     const allTransactions = data.payments
-      .filter((payment) => payment.paymentDate <= today && payment.extraAmount > 0)
+      .filter((payment) => payment.paymentDate <= today && payment.extraAmount > 0 && payment.month.startsWith(`${otherFundYear}-`))
       .map((payment) => {
         const account = accounts.find((item) => item.houseIds.includes(payment.houseId))
         const category = normalizeReceiptType(payment.extraType)
-        return { payment, account, category }
+        const responsibility = account ? responsibilityForAccountMonth(account, data, payment.month) : null
+        return { payment, account, category, responsibility }
       })
       .sort((a, b) => b.payment.paymentDate.localeCompare(a.payment.paymentDate) || b.payment.month.localeCompare(a.payment.month))
     const transactions = allTransactions.filter((item) => item.category !== 'Denda')
@@ -338,7 +342,10 @@ function App() {
     const accountsWithBalances: OtherFundAccountRow[] = accounts.map((account) => {
       const balances = accountBalances.get(account.id) ?? new Map<string, number>()
       const total = otherFundCategories.reduce((sum, category) => sum + (balances.get(category) ?? 0), 0)
-      return { account, balances, total }
+      const responsibleNames = [...new Set(Array.from({ length: 12 }, (_, index) =>
+        responsibilityForAccountMonth(account, data, `${otherFundYear}-${String(index + 1).padStart(2, '0')}`).name,
+      ))]
+      return { account, balances, total, responsibleNames }
     })
     return {
       categories,
@@ -347,9 +354,52 @@ function App() {
       allTransactions,
       total: categories.reduce((sum, item) => sum + item.balance, 0),
     }
-  }, [accounts, data.payments])
+  }, [accounts, data, otherFundYear])
   const selectedOtherFundAccount = otherFunds.accounts.find((item) => item.account.id === selectedOtherFundAccountId) ?? otherFunds.accounts[0]
   const selectedOtherFundTransactions = otherFunds.transactions.filter((item) => item.account?.id === selectedOtherFundAccount?.account.id)
+  const selectedOtherFundResponsibilityGroups = useMemo(() => {
+    if (!selectedOtherFundAccount) return []
+    type OtherFundResponsibilityGroup = {
+      key: string
+      name: string
+      role: string
+      isCurrent: boolean
+      months: string[]
+      balances: Map<string, number>
+      total: number
+    }
+    const groups = new Map<string, OtherFundResponsibilityGroup>()
+    const ensureGroup = (name: string, role: 'owner' | 'tenant') => {
+      const key = name.trim().toLocaleLowerCase('id-ID').replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ')
+      const existing = groups.get(key)
+      if (existing) return existing
+      const group: OtherFundResponsibilityGroup = {
+        key,
+        name,
+        role: occupantRoleLabel[role],
+        isCurrent: samePerson(name, selectedOtherFundAccount.account.residentName),
+        months: [],
+        balances: new Map(otherFundCategories.map((category) => [category, 0])),
+        total: 0,
+      }
+      groups.set(key, group)
+      return group
+    }
+
+    Array.from({ length: 12 }, (_, index) => `${otherFundYear}-${String(index + 1).padStart(2, '0')}`).forEach((month) => {
+      const responsibility = responsibilityForAccountMonth(selectedOtherFundAccount.account, data, month)
+      ensureGroup(responsibility.name, responsibility.role).months.push(month)
+    })
+    selectedOtherFundTransactions.forEach(({ payment, category, responsibility }) => {
+      if (!responsibility) return
+      const group = ensureGroup(responsibility.name, responsibility.role)
+      const normalizedCategory = normalizeOtherFundCategory(category)
+      group.balances.set(normalizedCategory, (group.balances.get(normalizedCategory) ?? 0) + payment.extraAmount)
+      group.total += payment.extraAmount
+    })
+    return [...groups.values()].sort((first, second) => Number(second.isCurrent) - Number(first.isCurrent)
+      || first.months[0].localeCompare(second.months[0]))
+  }, [data, otherFundYear, selectedOtherFundAccount, selectedOtherFundTransactions])
   const cash = useMemo(() => cashSummary(data, activeMonth, today), [data, activeMonth])
   const activeTariff = useMemo(() => tariffForMonth(data.tariffs, activeMonth), [data.tariffs, activeMonth])
   const expected = statements.reduce((sum, account) => sum + account.monthlyDue, 0)
@@ -429,16 +479,9 @@ function App() {
   const selectedYearStatus = selectedYearIsFuture
     ? 'Belum jatuh tempo'
     : selectedYearOutstanding === 0 ? 'Lunas' : 'Belum lunas'
-  const availableReportYears = useMemo(() => {
-    const transactionYears = [
-      ...data.payments.map((payment) => Number(payment.paymentDate.slice(0, 4))),
-      ...data.openingArrearsPayments.map((payment) => Number(payment.paymentDate.slice(0, 4))),
-      ...data.expenses.map((expense) => Number(expense.date.slice(0, 4))),
-      ...data.receivableTransactions.map((transaction) => Number(transaction.date.slice(0, 4))),
-    ].filter(Number.isFinite)
-    const lastYear = Math.max(maxReportYear, 2028, ...transactionYears)
-    return Array.from({ length: lastYear - 2026 + 1 }, (_, index) => 2026 + index)
-  }, [data, maxReportYear])
+  const availableReportYears = useMemo(() =>
+    Array.from({ length: Math.max(data.reportYearEnd, 2030) - 2026 + 1 }, (_, index) => 2026 + index),
+  [data.reportYearEnd])
   const financialReport = useMemo(() => {
     const reportStart = `${reportYear}-01-01`
     const reportEnd = reportYear < now.getFullYear() ? `${reportYear}-12-31` : today
@@ -573,7 +616,7 @@ function App() {
       closingBalance: rows.at(-1)?.runningBalance ?? data.openingCashBalance,
     }
   }, [accounts, data])
-  const journalYears = useMemo(() => Array.from(new Set(cashJournal.rows.map((entry) => entry.date.slice(0, 4)))).sort(), [cashJournal.rows])
+  const journalYears = availableReportYears.map(String)
   const filteredJournalRows = useMemo(() => {
     const query = journalQuery.trim().toLowerCase()
     return cashJournal.rows
@@ -617,6 +660,10 @@ function App() {
 
   const addPaymentPeriod = () => {
     const month = nextMonthValue(paymentForm.periods.at(-1)?.month ?? activeMonth)
+    if (Number(month.slice(0, 4)) > data.reportYearEnd) {
+      setError(`Periode setelah tahun ${data.reportYearEnd} belum dibuka oleh admin.`)
+      return
+    }
     const existingPayment = data.payments.find((payment) =>
       selected.houseIds.includes(payment.houseId) && payment.month === month && payment.mandatoryAmount > 0,
     )
@@ -656,6 +703,7 @@ function App() {
 
   const selectOtherReceiptAccount = (account: BillingAccount) => {
     setSelectedAccountId(account.id)
+    setSelectedOtherFundAccountId(account.id)
     setPaymentForm((form) => ({ ...form, receiptKind: 'other' }))
   }
 
@@ -694,6 +742,7 @@ function App() {
     if (paymentForm.receiptKind === 'other') {
       const extraAmount = Number(paymentForm.otherAmount)
       if (!paymentForm.otherPeriod) { setError('Periode penerimaan wajib dipilih.'); return }
+      if (!availableReportYears.includes(Number(paymentForm.otherPeriod.slice(0, 4)))) { setError(`Tahun ${paymentForm.otherPeriod.slice(0, 4)} belum dibuka oleh admin.`); return }
       if (extraAmount <= 0) { setError('Nilai penerimaan lain-lain harus lebih dari nol.'); return }
       payments = [{
         id: crypto.randomUUID(), houseId: selected.houseIds[0], month: paymentForm.otherPeriod,
@@ -704,6 +753,8 @@ function App() {
       successMessage = `Penerimaan lain-lain ${selected.code} berhasil dicatat.`
     } else {
       const periodMonths = paymentForm.periods.map((period) => period.month)
+      const unavailablePeriod = periodMonths.find((month) => !availableReportYears.includes(Number(month.slice(0, 4))))
+      if (unavailablePeriod) { setError(`Tahun ${unavailablePeriod.slice(0, 4)} belum dibuka oleh admin.`); return }
       if (new Set(periodMonths).size !== periodMonths.length) { setError('Setiap periode pembayaran harus berbeda.'); return }
       const arrearsAmount = Number(paymentForm.arrears)
       const selectedArrearsItem = selectedOpeningArrearsItems.find((item) => item.id === paymentForm.openingArrearsItemId)
@@ -1032,6 +1083,15 @@ function App() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pengaturan gagal disimpan.') }
   }
 
+  const addReportYear = async () => {
+    const reportYearEnd = data.reportYearEnd + 1
+    try {
+      if (supabaseConfigured) await updateRemoteSettings({ report_year_end: reportYearEnd })
+      setData((current) => ({ ...current, reportYearEnd }))
+      flash(`Tahun ${reportYearEnd} sudah dibuka untuk seluruh fungsi.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Tahun laporan gagal ditambahkan.') }
+  }
+
   const saveTariff = async (event: FormEvent) => {
     event.preventDefault()
     const tariff: Tariff = { id: crypto.randomUUID(), effectiveDate: tariffForm.effectiveDate, occupiedFee: Number(tariffForm.occupiedFee), emptyFee: Number(tariffForm.emptyFee), notes: tariffForm.notes }
@@ -1107,14 +1167,15 @@ function App() {
 
       {publicView === 'other-funds' && <div className="page-stack">
         <section className="panel other-funds-panel">
-          <div className="panel-title"><div><span>Dana titipan warga</span><h2>Penerimaan Lain-Lain per Rumah</h2><p>Saldo per akun sampai {pageOpenedLabel}. Klik rumah untuk melihat rincian pembayarannya. Denda tidak termasuk dalam saldo.</p></div><div className="other-funds-total"><span>Total saldo dana</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="panel-title"><div><span>Dana titipan warga</span><h2>Penerimaan Lain-Lain per Rumah</h2><p>Saldo periode tahun {otherFundYear}. Klik rumah untuk melihat penanggung jawab dan rincian pembayarannya. Denda tidak termasuk dalam saldo.</p></div><div className="other-funds-total"><span>Total saldo {otherFundYear}</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="recap-year-tabs public-year-tabs" aria-label="Pilih tahun penerimaan lain-lain">{availableReportYears.map((year) => <button className={otherFundYear === year ? 'active' : ''} key={year} onClick={() => setOtherFundYear(year)} type="button">{year}</button>)}</div>
           <div className="other-fund-summary">{otherFunds.categories.map((item) => <article className="other-fund-card" key={item.category}><div className="fund-icon"><PiggyBank size={20} /></div><span>{item.category}</span><strong>{rupiah.format(item.balance)}</strong></article>)}</div>
         </section>
-        <section className="panel other-fund-houses-panel"><div className="panel-title"><div><span>35 akun warga</span><h3>Saldo per Rumah</h3><p>Pilih akun untuk membuka detail penerimaan per jenis dan periode.</p></div></div><OtherFundAccountGrid rows={otherFunds.accounts} selectedId={selectedOtherFundAccountId} onSelect={openPublicOtherFundDetail} /></section>
+        <section className="panel other-fund-houses-panel"><div className="panel-title"><div><span>35 akun warga</span><h3>Saldo per Rumah Tahun {otherFundYear}</h3><p>Nama mengikuti penanggung jawab rumah pada periode tahun yang dipilih.</p></div></div><OtherFundAccountGrid rows={otherFunds.accounts} selectedId={selectedOtherFundAccountId} onSelect={openPublicOtherFundDetail} /></section>
       </div>}
 
       {publicView === 'expenses' && <div className="page-stack financial-page">
-        <section className="financial-position-card"><div><span>Laporan tahunan</span><h2>Laporan Posisi Keuangan</h2><p>Penerimaan dan pengeluaran tahun {reportYear}; saldo kas dan piutang sampai {financialReport.reportEnd === today ? pageOpenedLabel : `31 Desember ${reportYear}`}.</p><div className="report-period-control"><label>Tahun laporan<select value={reportYear} onChange={(event) => setReportYear(Number(event.target.value))}>{availableReportYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label><button type="button" onClick={() => setMaxReportYear((year) => year + 1)}><Plus size={15} />Tambah {availableReportYears.at(-1)! + 1}</button></div></div><div><span>Posisi kas</span><strong>{rupiah.format(financialReport.netPosition)}</strong></div></section>
+        <section className="financial-position-card"><div><span>Laporan tahunan</span><h2>Laporan Posisi Keuangan</h2><p>Penerimaan dan pengeluaran tahun {reportYear}; saldo kas dan piutang sampai {financialReport.reportEnd === today ? pageOpenedLabel : `31 Desember ${reportYear}`}.</p><div className="report-period-control"><label>Tahun laporan<select value={reportYear} onChange={(event) => setReportYear(Number(event.target.value))}>{availableReportYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label></div></div><div><span>Posisi kas</span><strong>{rupiah.format(financialReport.netPosition)}</strong></div></section>
         <div className="financial-columns">
           <section className="panel financial-column income-column">
             <div className="financial-column-heading"><div><span>PENERIMAAN {reportYear}</span><h3>Penerimaan Kas</h3></div><strong>{rupiah.format(financialReport.totalIncome)}</strong></div>
@@ -1176,7 +1237,7 @@ function App() {
               <div className="payment-periods wide">
                 <div className="payment-period-heading"><div><strong>Periode pembayaran</strong><span>Pilih bulan dan tahun. Tambahkan baris jika satu transaksi membayar beberapa bulan.</span></div><button className="secondary-action" type="button" onClick={addPaymentPeriod}><Plus size={16} />Tambah periode</button></div>
                 {paymentForm.periods.map((period, index) => <div className="payment-period-row" key={`${index}-${period.month}`}>
-                  <div className="payment-period-date"><label>Bulan<select value={period.month.slice(5, 7)} onChange={(event) => updatePaymentPeriodPart(index, 'month', event.target.value)}>{paymentMonths.map((month) => <option key={month.value} value={month.value}>{month.label}</option>)}</select></label><label>Tahun<select value={period.month.slice(0, 4)} onChange={(event) => updatePaymentPeriodPart(index, 'year', event.target.value)}>{paymentYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label></div>
+                  <div className="payment-period-date"><label>Bulan<select value={period.month.slice(5, 7)} onChange={(event) => updatePaymentPeriodPart(index, 'month', event.target.value)}>{paymentMonths.map((month) => <option key={month.value} value={month.value}>{month.label}</option>)}</select></label><label>Tahun<select value={period.month.slice(0, 4)} onChange={(event) => updatePaymentPeriodPart(index, 'year', event.target.value)}>{availableReportYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label></div>
                   <label>Iuran periode<input type="number" min="0" step="1000" value={period.mandatory} onChange={(event) => setPaymentForm((form) => ({ ...form, periods: form.periods.map((item, periodIndex) => periodIndex === index ? { ...item, mandatory: event.target.value } : item) }))} /></label>
                   <button aria-label={`Hapus periode ${monthLabel(period.month)}`} className="icon-button danger" disabled={paymentForm.periods.length === 1} onClick={() => removePaymentPeriod(index)} title="Hapus periode" type="button"><Trash2 size={16} /></button>
                 </div>)}
@@ -1192,14 +1253,14 @@ function App() {
         </>}
 
         {adminView === 'other-funds' && <>
-          <div className="admin-heading"><div><span>Pencatatan dan kontrol dana</span><h2>Penerimaan Lain-Lain</h2><p>Catat penerimaan program, sumbangan, iuran hari raya, denda, dan penerimaan lainnya secara terpisah dari iuran wajib.</p></div><div className="admin-stat"><span>Total saldo dana titipan</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
+          <div className="admin-heading"><div><span>Pencatatan dan kontrol dana</span><h2>Penerimaan Lain-Lain</h2><p>Catat dan pantau dana per tahun serta penanggung jawab rumah pada periode penerimaan.</p><div className="recap-year-tabs admin-fund-year-tabs" aria-label="Pilih tahun penerimaan lain-lain">{availableReportYears.map((year) => <button className={otherFundYear === year ? 'active' : ''} key={year} onClick={() => setOtherFundYear(year)} type="button">{year}</button>)}</div></div><div className="admin-stat"><span>Total saldo {otherFundYear}</span><strong>{rupiah.format(otherFunds.total)}</strong></div></div>
           <div className="admin-two-column other-receipt-entry">
             <section className="panel account-picker"><div className="panel-title"><div><span>35 akun warga</span><h3>Pilih akun</h3><p>Saldo yang tampil tidak termasuk denda.</p></div></div><OtherFundAccountGrid rows={otherFunds.accounts} selectedId={selected.id} onSelect={selectOtherReceiptAccount} /></section>
-            <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><PiggyBank size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selected.residentName}</p></div></div>
+            <section className="panel form-card"><div className="selected-admin"><div className="house-avatar"><PiggyBank size={22} /></div><div><span>Akun terpilih</span><h3>{selected.code}</h3><p>{selectedOtherReceiptResponsibility.name} · {occupantRoleLabel[selectedOtherReceiptResponsibility.role]} untuk {monthLabel(paymentForm.otherPeriod)}</p></div></div>
               <form className="form-grid" onSubmit={savePayment}>
                 <label>Tanggal penerimaan<input type="date" required value={paymentForm.paymentDate} onChange={(event) => setPaymentForm({ ...paymentForm, paymentDate: event.target.value })} /></label>
                 <label>Metode<select value={paymentForm.method} onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>
-                <label>Periode penerimaan<input type="month" min="2026-01" required value={paymentForm.otherPeriod} onChange={(event) => setPaymentForm({ ...paymentForm, otherPeriod: event.target.value })} /></label>
+                <div className="payment-period-date"><label>Bulan periode<select value={paymentForm.otherPeriod.slice(5, 7)} onChange={(event) => setPaymentForm({ ...paymentForm, otherPeriod: `${paymentForm.otherPeriod.slice(0, 4)}-${event.target.value}` })}>{paymentMonths.map((month) => <option key={month.value} value={month.value}>{month.label}</option>)}</select></label><label>Tahun periode<select value={paymentForm.otherPeriod.slice(0, 4)} onChange={(event) => setPaymentForm({ ...paymentForm, otherPeriod: `${event.target.value}-${paymentForm.otherPeriod.slice(5, 7)}` })}>{availableReportYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label></div>
                 <label>Jenis penerimaan<select value={paymentForm.extraType} onChange={(event) => setPaymentForm({ ...paymentForm, extraType: event.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
                 <label className="wide">Nilai penerimaan<input type="number" min="0" step="1000" required value={paymentForm.otherAmount} onChange={(event) => setPaymentForm({ ...paymentForm, otherAmount: event.target.value })} /></label>
                 <label className="wide">Catatan<input placeholder="Opsional" value={paymentForm.notes} onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })} /></label>
@@ -1207,12 +1268,13 @@ function App() {
               </form>
             </section>
           </div>
+          <section className="panel admin-fund-responsibility-panel"><div className="panel-title"><div><span>Kontrol penanggung jawab</span><h3>{selected.code} · Tahun {otherFundYear}</h3><p>Saldo dipisahkan mengikuti periode tinggal setiap penghuni.</p></div></div><div className="debtor-liability-grid">{selectedOtherFundResponsibilityGroups.map((group) => <article className={`${group.isCurrent ? 'current' : ''} fund-responsibility-card`} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni saat ini</span> : <span className="former-debtor-badge">Penghuni periode</span>}</div><dl><div className="responsibility-period"><dt>Periode tanggung jawab</dt><dd>{responsibilityPeriodLabel(group.months)}</dd></div>{otherFundCategories.filter((category) => (group.balances.get(category) ?? 0) > 0).map((category) => <div key={category}><dt>{category}</dt><dd>{rupiah.format(group.balances.get(category) ?? 0)}</dd></div>)}<div className="liability-total"><dt>Total dana {otherFundYear}</dt><dd>{rupiah.format(group.total)}</dd></div></dl></article>)}</div></section>
           <section className="other-fund-summary admin-fund-summary">{otherFunds.categories.map((item) => <article className="other-fund-card" key={item.category}><div className="fund-icon"><PiggyBank size={20} /></div><span>{item.category}</span><strong>{rupiah.format(item.balance)}</strong></article>)}</section>
           <section className="panel fund-monitor-panel">
-            <div className="panel-title"><div><span>Saldo per akun</span><h3>Rincian Dana Warga</h3><p>Nilai merupakan akumulasi penerimaan untuk masing-masing jenis dana.</p></div></div>
-            <div className="table-wrap"><table className="other-fund-table"><thead><tr><th>Akun</th><th>Nama</th>{otherFundCategories.map((category) => <th key={category}>{category}</th>)}<th>Total</th></tr></thead><tbody>{otherFunds.accounts.length ? otherFunds.accounts.map(({ account, balances, total }) => <tr key={account.id}><td><strong>{account.code}</strong></td><td>{account.residentName}</td>{otherFundCategories.map((category) => { const balance = balances.get(category) ?? 0; return <td key={category}>{balance > 0 ? rupiah.format(balance) : '—'}</td> })}<td><strong>{rupiah.format(total)}</strong></td></tr>) : <tr><td colSpan={otherFundCategories.length + 3}><div className="empty-state">Belum ada saldo penerimaan lain-lain selain denda.</div></td></tr>}</tbody><tfoot><tr><td colSpan={2}>Total per jenis dana</td>{otherFunds.categories.map((item) => <td key={item.category}>{rupiah.format(item.balance)}</td>)}<td>{rupiah.format(otherFunds.total)}</td></tr></tfoot></table></div>
+            <div className="panel-title"><div><span>Saldo per akun</span><h3>Rincian Dana Warga Tahun {otherFundYear}</h3><p>Nama mengikuti penanggung jawab rumah pada bulan penerimaan.</p></div></div>
+            <div className="table-wrap"><table className="other-fund-table"><thead><tr><th>Akun</th><th>Penanggung jawab</th>{otherFundCategories.map((category) => <th key={category}>{category}</th>)}<th>Total</th></tr></thead><tbody>{otherFunds.accounts.length ? otherFunds.accounts.map(({ account, balances, total, responsibleNames }) => <tr key={account.id}><td><strong>{account.code}</strong></td><td>{responsibleNames.join(' · ') || account.residentName}</td>{otherFundCategories.map((category) => { const balance = balances.get(category) ?? 0; return <td key={category}>{balance > 0 ? rupiah.format(balance) : '—'}</td> })}<td><strong>{rupiah.format(total)}</strong></td></tr>) : <tr><td colSpan={otherFundCategories.length + 3}><div className="empty-state">Belum ada saldo penerimaan lain-lain selain denda.</div></td></tr>}</tbody><tfoot><tr><td colSpan={2}>Total per jenis dana</td>{otherFunds.categories.map((item) => <td key={item.category}>{rupiah.format(item.balance)}</td>)}<td>{rupiah.format(otherFunds.total)}</td></tr></tfoot></table></div>
           </section>
-          <section className="panel history-panel"><div className="panel-title"><div><span>Mutasi masuk</span><h3>Riwayat Penerimaan Lain-Lain</h3><p>Denda ditampilkan dalam riwayat, tetapi tidak masuk saldo dana titipan. Gunakan Jurnal Kas untuk mengedit atau menghapus catatan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Akun</th><th>Jenis dana</th><th>Nilai</th><th>Metode</th><th>Catatan</th></tr></thead><tbody>{otherFunds.allTransactions.length ? otherFunds.allTransactions.map(({ payment, account, category }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td><strong>{account?.code ?? `CSJ ${String(payment.houseId).padStart(2, '0')}`}</strong></td><td>{category}{category === 'Denda' ? <small className="fine-label">Bukan dana titipan</small> : null}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td><td>{payment.method || '—'}</td><td>{payment.notes || '—'}</td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada penerimaan lain-lain.</div></td></tr>}</tbody></table></div></section>
+          <section className="panel history-panel"><div className="panel-title"><div><span>Mutasi masuk</span><h3>Riwayat Penerimaan Lain-Lain {otherFundYear}</h3><p>Denda ditampilkan dalam riwayat, tetapi tidak masuk saldo dana titipan. Penanggung jawab mengikuti penghuni pada periode penerimaan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Akun</th><th>Penanggung jawab</th><th>Jenis dana</th><th>Nilai</th><th>Metode</th><th>Catatan</th></tr></thead><tbody>{otherFunds.allTransactions.length ? otherFunds.allTransactions.map(({ payment, account, category, responsibility }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td><strong>{account?.code ?? `CSJ ${String(payment.houseId).padStart(2, '0')}`}</strong></td><td>{responsibility?.name ?? '—'}{responsibility ? <small className="fine-label">{occupantRoleLabel[responsibility.role]}</small> : null}</td><td>{category}{category === 'Denda' ? <small className="fine-label">Bukan dana titipan</small> : null}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td><td>{payment.method || '—'}</td><td>{payment.notes || '—'}</td></tr>) : <tr><td colSpan={8}><div className="empty-state">Belum ada penerimaan lain-lain pada tahun {otherFundYear}.</div></td></tr>}</tbody></table></div></section>
         </>}
 
         {adminView === 'expenses' && <>
@@ -1295,6 +1357,7 @@ function App() {
         </>}
 
         {adminView === 'settings' && <><div className="admin-heading"><div><span>Konfigurasi</span><h2>Pengaturan Kas</h2><p>Kelola rekening pembayaran, saldo awal, dan riwayat tarif.</p></div></div><div className="settings-grid"><section className="panel form-card"><div className="panel-title"><div><span>Informasi publik</span><h3>Rekening dan Saldo Awal</h3></div></div><form className="form-grid" onSubmit={saveSettings}><label>Nama bank<input value={settingsForm.bankName} onChange={(e) => setSettingsForm({ ...settingsForm, bankName: e.target.value })} /></label><label>Nomor rekening<input value={settingsForm.bankAccountNumber} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountNumber: e.target.value })} /></label><label>Nama pemilik rekening<input value={settingsForm.bankAccountHolder} onChange={(e) => setSettingsForm({ ...settingsForm, bankAccountHolder: e.target.value })} /></label><label>Saldo awal kas<input type="number" step="1000" value={settingsForm.openingCashBalance} onChange={(e) => setSettingsForm({ ...settingsForm, openingCashBalance: e.target.value })} /></label><label className="wide">Tarif gabungan CSJ02 + CSJ03<input type="number" min="0" step="1000" value={settingsForm.jointFee0203} onChange={(e) => setSettingsForm({ ...settingsForm, jointFee0203: e.target.value })} /></label><button className="primary-action wide" type="submit">Simpan pengaturan</button></form></section><section className="panel form-card"><div className="panel-title"><div><span>Tarif efektif</span><h3>Tambah Riwayat Tarif</h3></div></div><div className="current-tariff"><span>Tarif {monthLabel(activeMonth)}</span><strong>Dihuni {rupiah.format(activeTariff.occupiedFee)} · Kosong {rupiah.format(activeTariff.emptyFee)}</strong></div><form className="form-grid" onSubmit={saveTariff}><label>Berlaku mulai<input type="date" value={tariffForm.effectiveDate} onChange={(e) => setTariffForm({ ...tariffForm, effectiveDate: e.target.value })} /></label><label>Tarif dihuni<input type="number" min="0" step="1000" value={tariffForm.occupiedFee} onChange={(e) => setTariffForm({ ...tariffForm, occupiedFee: e.target.value })} /></label><label>Tarif rumah kosong<input type="number" min="0" step="1000" value={tariffForm.emptyFee} onChange={(e) => setTariffForm({ ...tariffForm, emptyFee: e.target.value })} /></label><label>Catatan<input placeholder="Contoh: keputusan rapat warga" value={tariffForm.notes} onChange={(e) => setTariffForm({ ...tariffForm, notes: e.target.value })} /></label><button className="primary-action wide" type="submit"><Plus size={18} />Tambahkan tarif</button></form><div className="tariff-history">{[...data.tariffs].reverse().map((tariff) => <div key={tariff.id}><span>{tariff.effectiveDate}</span><strong>{rupiah.format(tariff.occupiedFee)} / {rupiah.format(tariff.emptyFee)}</strong></div>)}</div></section></div></>}
+        {adminView === 'settings' && <section className="panel report-year-settings"><div className="panel-title"><div><span>Periode penggunaan</span><h3>Tahun yang Dibuka Admin</h3><p>Seluruh pilihan tahun pada laman admin dan warga mengikuti daftar ini.</p></div><button className="primary-action" type="button" onClick={() => void addReportYear()}><Plus size={17} />Tambah tahun {data.reportYearEnd + 1}</button></div><div className="recap-year-tabs admin-open-years" aria-label="Tahun yang sudah dibuka">{availableReportYears.map((year) => <span key={year}>{year}</span>)}</div><small>Saat ini web digunakan sampai 31 Desember {data.reportYearEnd}. Warga hanya dapat melihat tahun yang sudah dibuka di sini.</small></section>}
       </div>
     </section>}
 
@@ -1303,7 +1366,7 @@ function App() {
     {showRecap && <div className="modal-backdrop" role="presentation"><section className="recap-dialog" role="dialog" aria-modal="true" aria-label={`Rekap pembayaran ${selected.code}`}>
       <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
       <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>Iuran tahun {recapYear}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${selectedYearIsFuture ? 'future' : selectedYearOutstanding === 0 ? 'paid' : 'due'}`}>{selectedYearStatus}</span></div>
-      <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{availableReportYears.map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}<button className="add-year" onClick={() => setMaxReportYear((year) => year + 1)} type="button"><Plus size={14} />{availableReportYears.at(-1)! + 1}</button></div>
+      <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{availableReportYears.map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}</div>
       <div className="cumulative-due"><div><span>Tunggakan iuran tahun {recapYear}</span><small>{selectedYearIsFuture ? 'Belum ada iuran yang jatuh tempo pada tahun ini.' : recapYear === now.getFullYear() ? `Akumulasi bulan jatuh tempo sampai ${pageOpenedLabel}` : `Posisi sampai 31 Desember ${recapYear}`}</small></div><strong>{rupiah.format(selectedYearOutstanding)}</strong></div>
       <section className="debtor-liability-section"><div className="debtor-liability-heading"><div><span className="section-kicker">Penghuni dan periode</span><h3>Penanggung Jawab Tahun {recapYear}</h3></div><small>Penanggung jawab iuran mengikuti penghuni yang aktif pada tanggal 1 setiap bulan.</small></div><div className="debtor-liability-grid">{debtorLiabilityGroups.map((group) => <article className={group.isCurrent ? 'current' : ''} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni saat ini</span> : <span className="former-debtor-badge">Penghuni periode</span>}</div><dl><div className="responsibility-period"><dt>Periode tanggung jawab</dt><dd>{responsibilityPeriodLabel(group.months)}</dd></div><div><dt>Tagihan jatuh tempo</dt><dd>{rupiah.format(group.monthlyBilled)}</dd></div><div><dt>Sudah dibayar</dt><dd>{rupiah.format(group.monthlyPaid)}</dd></div><div className="liability-total"><dt>Tunggakan {recapYear}</dt><dd>{rupiah.format(group.monthlyOutstanding)}</dd></div></dl></article>)}</div></section>
       <div className="month-recap-grid">{monthlyRecap.map((item) => {
@@ -1315,9 +1378,11 @@ function App() {
 
     {showOtherFundDetail && selectedOtherFundAccount && <div className="modal-backdrop" role="presentation"><section className="recap-dialog other-fund-detail-dialog" role="dialog" aria-modal="true" aria-label={`Detail penerimaan lain-lain ${selectedOtherFundAccount.account.code}`}>
       <button className="modal-close" onClick={() => setShowOtherFundDetail(false)} aria-label="Tutup detail"><X size={20} /></button>
-      <div className="recap-heading"><div><span className="section-kicker">Penerimaan lain-lain</span><h2>{selectedOtherFundAccount.account.code}</h2><p>{selectedOtherFundAccount.account.residentName}</p></div><div className="detail-fund-total"><span>Total saldo</span><strong>{rupiah.format(selectedOtherFundAccount.total)}</strong></div></div>
+      <div className="recap-heading"><div><span className="section-kicker">Penerimaan lain-lain</span><h2>{selectedOtherFundAccount.account.code}</h2><p>Rincian dana dan penanggung jawab tahun {otherFundYear}</p></div><div className="detail-fund-total"><span>Total saldo {otherFundYear}</span><strong>{rupiah.format(selectedOtherFundAccount.total)}</strong></div></div>
+      <div className="recap-year-tabs" aria-label="Pilih tahun detail penerimaan lain-lain">{availableReportYears.map((year) => <button className={otherFundYear === year ? 'active' : ''} key={year} onClick={() => setOtherFundYear(year)} type="button">{year}</button>)}</div>
       <div className="other-fund-summary detail-fund-summary">{otherFundCategories.map((category) => <article className="other-fund-card" key={category}><div className="fund-icon"><PiggyBank size={19} /></div><span>{category}</span><strong>{rupiah.format(selectedOtherFundAccount.balances.get(category) ?? 0)}</strong></article>)}</div>
-      <div className="detail-fund-history"><div className="panel-title"><div><span>Rincian pembayaran</span><h3>Mutasi per Periode</h3><p>Denda tidak termasuk dalam saldo dan rincian dana titipan ini.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Jenis dana</th><th>Nilai</th></tr></thead><tbody>{selectedOtherFundTransactions.length ? selectedOtherFundTransactions.map(({ payment, category }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{normalizeOtherFundCategory(category)}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td></tr>) : <tr><td colSpan={4}><div className="empty-state">Belum ada pembayaran penerimaan lain-lain untuk akun ini.</div></td></tr>}</tbody></table></div></div>
+      <section className="debtor-liability-section other-fund-responsibility"><div className="debtor-liability-heading"><div><span className="section-kicker">Penghuni dan periode</span><h3>Penanggung Jawab Tahun {otherFundYear}</h3></div><small>Pembayaran dikaitkan dengan penghuni yang aktif pada periode bulan yang dipilih admin.</small></div><div className="debtor-liability-grid">{selectedOtherFundResponsibilityGroups.map((group) => <article className={`${group.isCurrent ? 'current' : ''} fund-responsibility-card`} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni saat ini</span> : <span className="former-debtor-badge">Penghuni periode</span>}</div><dl><div className="responsibility-period"><dt>Periode tanggung jawab</dt><dd>{responsibilityPeriodLabel(group.months)}</dd></div>{otherFundCategories.filter((category) => (group.balances.get(category) ?? 0) > 0).map((category) => <div key={category}><dt>{category}</dt><dd>{rupiah.format(group.balances.get(category) ?? 0)}</dd></div>)}<div className="liability-total"><dt>Total dana {otherFundYear}</dt><dd>{rupiah.format(group.total)}</dd></div></dl></article>)}</div></section>
+      <div className="detail-fund-history"><div className="panel-title"><div><span>Rincian pembayaran</span><h3>Mutasi Tahun {otherFundYear}</h3><p>Denda tidak termasuk dalam saldo dan rincian dana titipan ini.</p></div></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Periode</th><th>Penanggung jawab</th><th>Jenis dana</th><th>Nilai</th></tr></thead><tbody>{selectedOtherFundTransactions.length ? selectedOtherFundTransactions.map(({ payment, category, responsibility }) => <tr key={payment.id}><td>{payment.paymentDate}</td><td>{monthLabel(payment.month)}</td><td>{responsibility?.name ?? '—'}</td><td>{normalizeOtherFundCategory(category)}</td><td><strong>{rupiah.format(payment.extraAmount)}</strong></td></tr>) : <tr><td colSpan={5}><div className="empty-state">Belum ada pembayaran penerimaan lain-lain untuk akun ini pada tahun {otherFundYear}.</div></td></tr>}</tbody></table></div></div>
     </section></div>}
 
     {journalEdit && <div className="modal-backdrop" role="presentation"><section className="login-dialog journal-edit-dialog" role="dialog" aria-modal="true" aria-label="Edit catatan jurnal">
@@ -1326,7 +1391,7 @@ function App() {
       {error && <div className="error-banner journal-edit-error"><CircleAlert size={17} /><span>{error}</span></div>}
       <form className="form-grid" onSubmit={saveJournalEdit}>
         <label>Tanggal transaksi<input type="date" required value={journalEdit.date} onChange={(event) => setJournalEdit({ ...journalEdit, date: event.target.value })} /></label>
-        {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Periode<input type="month" min="2026-01" required value={journalEdit.month} onChange={(event) => setJournalEdit({ ...journalEdit, month: event.target.value })} /></label>}
+        {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Periode<input type="month" min="2026-01" max={`${data.reportYearEnd}-12`} required value={journalEdit.month} onChange={(event) => setJournalEdit({ ...journalEdit, month: event.target.value })} /></label>}
         {journalEdit.entry.entityType === 'payment-dues' && <><label>Iuran periode<input type="number" min="0" step="1000" value={journalEdit.mandatoryAmount} onChange={(event) => setJournalEdit({ ...journalEdit, mandatoryAmount: event.target.value })} /></label><label>Pelunasan tunggakan<input type="number" min="0" step="1000" value={journalEdit.arrearsAmount} onChange={(event) => setJournalEdit({ ...journalEdit, arrearsAmount: event.target.value })} /></label></>}
         {journalEdit.entry.entityType === 'payment-other' && <><label>Jenis penerimaan<select value={journalEdit.extraType} onChange={(event) => setJournalEdit({ ...journalEdit, extraType: event.target.value })}>{otherReceiptTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label>Nilai penerimaan<input type="number" min="0" step="1000" required value={journalEdit.extraAmount} onChange={(event) => setJournalEdit({ ...journalEdit, extraAmount: event.target.value })} /></label></>}
         {(journalEdit.entry.entityType === 'payment-dues' || journalEdit.entry.entityType === 'payment-other') && <label>Metode<select value={journalEdit.method} onChange={(event) => setJournalEdit({ ...journalEdit, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>QRIS</option><option>Lainnya</option></select></label>}

@@ -300,6 +300,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     bankName: settingText(settings, 'bank_name', 'Bank Neo Commerce'),
     bankAccountNumber: settingText(settings, 'bank_account_number', '5859457243882555'),
     bankAccountHolder: settingText(settings, 'bank_account_holder', 'Suwondo'),
+    reportYearEnd: Math.max(2030, settingNumber(settings, 'report_year_end', 2030)),
     pendingPaymentMonths,
   }
 }
