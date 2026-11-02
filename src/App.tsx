@@ -8,8 +8,8 @@ import {
 import './App.css'
 import {
   buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
-  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, receivableCashMovement,
-  statementForAccount, tariffForMonth,
+  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, monthsBetween, receivableCashMovement,
+  responsibilityForAccountMonth, samePerson, statementForAccount, tariffForMonth,
 } from './domain'
 import {
   createRemoteExpense, createRemoteOccupancy, createRemoteOpeningArrearsItem, createRemotePayments,
@@ -213,6 +213,7 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
+  const [houseEffectiveDates, setHouseEffectiveDates] = useState<Record<number, string>>({})
   const [openingArrearsDrafts, setOpeningArrearsDrafts] = useState<Record<string, string>>({})
   const [arrearsForm, setArrearsForm] = useState({
     houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
@@ -345,6 +346,7 @@ function App() {
   const filteredHouses = data.houses.filter((house) => `${house.number} ${house.owner} ${house.tenant}`.toLowerCase().includes(houseQuery.toLowerCase()))
   const monthlyRecap = useMemo(() => Array.from({ length: 12 }, (_, index) => {
     const month = `${recapYear}-${String(index + 1).padStart(2, '0')}`
+    const responsibility = responsibilityForAccountMonth(selected, data, month)
     const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
     const paid = data.payments
       .filter((payment) => selected.houseIds.includes(payment.houseId) && payment.month === month)
@@ -357,11 +359,73 @@ function App() {
     )
     return {
       month, due, paid, outstanding, isPaid, isNotApplicable,
+      responsibleName: responsibility.name,
+      isCurrentResident: samePerson(responsibility.name, selected.residentName),
       isPending: Boolean(pendingReview) && outstanding > 0, pendingNotes: outstanding > 0 ? pendingReview?.notes ?? '' : '',
       isPartial: paid > 0 && outstanding > 0,
       isFuture: month > currentMonth && !isPaid,
     }
   }), [data, recapYear, selected])
+  const debtorLiabilityGroups = useMemo(() => {
+    type LiabilityGroup = {
+      key: string
+      name: string
+      role: string
+      isCurrent: boolean
+      openingOriginal: number
+      openingPaid: number
+      openingOutstanding: number
+      monthlyBilled: number
+      monthlyPaid: number
+      monthlyOutstanding: number
+    }
+    const groups = new Map<string, LiabilityGroup>()
+    const ensureGroup = (name: string, role: string) => {
+      const key = name.trim().toLocaleLowerCase('id-ID').replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ')
+      const existing = groups.get(key)
+      if (existing) return existing
+      const next: LiabilityGroup = {
+        key, name, role, isCurrent: samePerson(name, selected.residentName),
+        openingOriginal: 0, openingPaid: 0, openingOutstanding: 0,
+        monthlyBilled: 0, monthlyPaid: 0, monthlyOutstanding: 0,
+      }
+      groups.set(key, next)
+      return next
+    }
+
+    openingArrearsBalances
+      .filter((item) => item.houseId !== null && selected.houseIds.includes(item.houseId))
+      .forEach((item) => {
+        const group = ensureGroup(item.debtorName, arrearsDebtorRoleLabel[item.debtorRole])
+        group.openingOriginal += item.originalAmount
+        group.openingPaid += item.settled
+        group.openingOutstanding += item.outstanding
+      })
+
+    monthsBetween('2026-01', currentMonth).forEach((month) => {
+      const responsibility = responsibilityForAccountMonth(selected, data, month)
+      const due = monthlyFeeForAccount(selected, data.houses, data.tariffs, data.jointFee0203, month)
+      if (due <= 0) return
+      const group = ensureGroup(responsibility.name, occupantRoleLabel[responsibility.role])
+      const periodPayments = data.payments.filter((payment) =>
+        selected.houseIds.includes(payment.houseId) && payment.month === month,
+      )
+      const paid = periodPayments.reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
+      const genericArrearsPaid = periodPayments
+        .filter((payment) => !payment.openingArrearsItemId)
+        .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+      group.monthlyBilled += due
+      group.monthlyPaid += paid + genericArrearsPaid
+      group.monthlyOutstanding += Math.max(due - paid - genericArrearsPaid, 0)
+    })
+
+    return [...groups.values()]
+      .filter((group) => group.openingOriginal > 0 || group.monthlyBilled > 0)
+      .sort((first, second) => Number(second.isCurrent) - Number(first.isCurrent)
+        || (second.openingOutstanding + second.monthlyOutstanding)
+          - (first.openingOutstanding + first.monthlyOutstanding)
+        || first.name.localeCompare(second.name))
+  }, [data, openingArrearsBalances, selected])
   const currentRecapStatement = useMemo(
     () => statementForAccount(selected, data, currentMonth),
     [data, selected],
@@ -859,8 +923,14 @@ function App() {
   const patchHouse = (id: number, patch: Partial<House>) => setData((current) => ({ ...current, houses: current.houses.map((house) => house.id === id ? { ...house, ...patch } : house) }))
   const persistHouse = async (house: House) => {
     try {
-      if (supabaseConfigured) { await updateRemoteHouse(house, today); await loadData() }
-      flash(`${house.number} diperbarui. Riwayat penghuni telah disesuaikan.`)
+      const effectiveDate = houseEffectiveDates[house.id] || today
+      if (supabaseConfigured) { await updateRemoteHouse(house, effectiveDate); await loadData() }
+      setHouseEffectiveDates((current) => {
+        const next = { ...current }
+        delete next[house.id]
+        return next
+      })
+      flash(`${house.number} diperbarui. Penanggung jawab berlaku mulai ${effectiveDate}.`)
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
   }
@@ -1236,7 +1306,7 @@ function App() {
 
         {adminView === 'houses' && <>
           <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola data rumah, penghuni aktif, serta riwayat perubahan penyewa.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
-          <section className="panel house-editor"><div className="panel-title"><div><span>Data penghuni saat ini</span><h3>Rumah dan Penghuni Aktif</h3><p>Ketika nama atau status penghuni berubah, riwayat aktif sebelumnya ditutup otomatis pada tanggal penyimpanan.</p></div></div><div className="table-wrap"><table><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai sewa</th><th>Mulai tagihan</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="date" disabled={house.residenceStatus !== 'rented'} value={house.rentalStartDate} onChange={(e) => patchHouse(house.id, { rentalStartDate: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><button className="small-action" type="button" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
+          <section className="panel house-editor"><div className="panel-title"><div><span>Data penghuni saat ini</span><h3>Rumah dan Penanggung Jawab Aktif</h3><p>Identitas akun iuran adalah nomor rumah + nama penghuni. Saat nama/status berubah, isi tanggal mulai agar kewajiban sebelum tanggal tersebut tetap tercatat atas nama penghuni lama.</p></div></div><div className="table-wrap"><table className="house-responsibility-table"><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai sewa</th><th>Mulai tagihan</th><th>Nama baru berlaku</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="date" disabled={house.residenceStatus !== 'rented'} value={house.rentalStartDate} onChange={(e) => patchHouse(house.id, { rentalStartDate: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><input aria-label={`Tanggal mulai penanggung jawab ${house.number}`} type="date" value={houseEffectiveDates[house.id] ?? today} onChange={(event) => setHouseEffectiveDates((current) => ({ ...current, [house.id]: event.target.value }))} /></td><td><button className="small-action" type="button" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
           <section className="panel occupancy-history-panel">
             <div className="panel-title"><div><span>Jejak perubahan</span><h3>Riwayat Penghuni</h3><p>Gunakan formulir ini untuk memasukkan periode lama. Penghuni aktif dikelola melalui tabel rumah di atas.</p></div></div>
             <form className="form-grid trace-form" onSubmit={saveOccupancy}>
@@ -1262,11 +1332,12 @@ function App() {
       <button className="modal-close" onClick={() => setShowRecap(false)} aria-label="Tutup rekap"><X size={20} /></button>
       <div className="recap-heading"><div><span className="section-kicker">Rekap pembayaran</span><h2>{selected.code}</h2><p>{selected.residentName}{selected.houseIds.length === 2 ? ' · satu akun gabungan' : ''}</p></div><span className={`status-badge ${currentRecapStatement.isPaid ? 'paid' : 'due'}`}>{currentRecapStatement.isPaid ? 'Lunas' : 'Belum lunas'}</span></div>
       <div className="recap-year-tabs" aria-label="Pilih tahun rekap">{availableReportYears.map((year) => <button className={recapYear === year ? 'active' : ''} key={year} onClick={() => setRecapYear(year)} type="button">{year}</button>)}<button className="add-year" onClick={() => setMaxReportYear((year) => year + 1)} type="button"><Plus size={14} />{availableReportYears.at(-1)! + 1}</button></div>
-      <div className="cumulative-due"><div><span>Kumulatif belum terbayar</span><small>Sampai halaman dibuka pada {pageOpenedLabel}</small></div><strong>{rupiah.format(currentRecapStatement.totalOutstanding)}</strong></div>
-      <div className="prior-arrears"><div><span>Tagihan sampai 31 Desember 2025</span><small>Nilai ini diisi manual oleh pengurus.</small></div><strong>{rupiah.format(selected.openingArrears)}</strong></div>
+      <div className="cumulative-due"><div><span>Kumulatif belum terbayar · {selected.residentName}</span><small>Hanya kewajiban penanggung jawab aktif, sampai halaman dibuka pada {pageOpenedLabel}</small></div><strong>{rupiah.format(currentRecapStatement.totalOutstanding)}</strong></div>
+      <div className="prior-arrears"><div><span>Tagihan {selected.residentName} sampai 31 Desember 2025</span><small>Tunggakan milik orang lain pada rumah ini tidak dimasukkan.</small></div><strong>{rupiah.format(selected.openingArrears)}</strong></div>
+      <section className="debtor-liability-section"><div className="debtor-liability-heading"><div><span className="section-kicker">Pemisahan penanggung jawab</span><h3>Kewajiban per Nama</h3></div><small>Iuran bulanan mengikuti penghuni yang aktif pada tanggal 1 setiap bulan.</small></div><div className="debtor-liability-grid">{debtorLiabilityGroups.map((group) => <article className={group.isCurrent ? 'current' : ''} key={group.key}><div className="debtor-liability-name"><div><strong>{group.name}</strong><span>{group.role}</span></div>{group.isCurrent ? <span className="current-debtor-badge">Penghuni aktif</span> : <span className="former-debtor-badge">Penanggung jawab lama</span>}</div><dl><div><dt>Sisa s.d. 2025</dt><dd>{rupiah.format(group.openingOutstanding)}</dd></div><div><dt>Sisa iuran bulanan</dt><dd>{rupiah.format(group.monthlyOutstanding)}</dd></div><div className="liability-total"><dt>Total atas nama ini</dt><dd>{rupiah.format(group.openingOutstanding + group.monthlyOutstanding)}</dd></div></dl></article>)}</div></section>
       <div className="month-recap-grid">{monthlyRecap.map((item) => {
         const state = item.isNotApplicable ? 'not-applicable' : item.isPending ? 'pending' : item.isPaid ? 'paid' : item.isPartial ? 'partial' : item.isFuture ? 'future' : 'due'
-        return <article className={state} key={item.month}><div className="month-status-icon">{item.isPending ? <CircleAlert size={18} /> : item.isNotApplicable || item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : item.isPartial ? <CircleAlert size={18} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isNotApplicable ? 'Belum mulai tagihan' : item.isPending ? 'Menunggu konfirmasi' : item.isPaid ? 'Lunas' : item.isPartial ? 'Dibayar sebagian' : item.isFuture ? 'Belum jatuh tempo' : 'Belum dibayar'}</span></div>{(state === 'due' || state === 'partial') && <div className="month-outstanding"><span>{state === 'partial' ? 'Sisa terutang' : 'Terutang'}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}{state === 'pending' && <div className="month-pending-note"><span>{item.pendingNotes}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>
+        return <article className={`${state} ${item.isCurrentResident ? '' : 'other-responsibility'}`} key={item.month}><div className="month-status-icon">{item.isPending ? <CircleAlert size={18} /> : item.isNotApplicable || item.isFuture ? <CalendarDays size={17} /> : item.isPaid ? <Check size={19} /> : item.isPartial ? <CircleAlert size={18} /> : <X size={19} />}</div><div><strong>{monthLabel(item.month)}</strong><span>{item.isNotApplicable ? 'Belum mulai tagihan' : item.isPending ? 'Menunggu konfirmasi' : item.isPaid ? 'Lunas' : item.isPartial ? 'Dibayar sebagian' : item.isFuture ? 'Belum jatuh tempo' : 'Belum dibayar'}</span>{item.responsibleName && <small className="month-responsible-name">Atas nama {item.responsibleName}</small>}</div>{(state === 'due' || state === 'partial') && <div className="month-outstanding"><span>{state === 'partial' ? 'Sisa terutang' : 'Terutang'}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}{state === 'pending' && <div className="month-pending-note"><span>{item.pendingNotes}</span><strong>{rupiah.format(item.outstanding)}</strong></div>}</article>
       })}</div>
       <div className="recap-legend"><span><i className="dot paid" />Hijau: lunas</span><span><i className="dot due" />Merah ✕: belum lunas</span><span><i className="dot partial" />Merah muda: dibayar sebagian</span><span><i className="dot pending" />Kuning: menunggu konfirmasi</span><span><i className="dot future" />Abu-abu: belum jatuh tempo</span></div>
     </section></div>}

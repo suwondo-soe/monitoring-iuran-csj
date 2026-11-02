@@ -147,10 +147,13 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     method: row.payment_method ?? '',
     notes: row.notes ?? '',
   }))
-  if (sessionData.session) {
-    const occupanciesResult = await client.from('house_occupancies').select('*').order('start_date', { ascending: false })
-    if (occupanciesResult.error) throw occupanciesResult.error
-    houseOccupancies = (occupanciesResult.data as OccupancyRow[]).map((row) => ({
+  const publicOccupancyFields = 'id,house_id,occupant_name,occupant_role,start_date,end_date'
+  const occupanciesResult = await client.from('house_occupancies')
+    .select(sessionData.session ? '*' : publicOccupancyFields)
+    .order('start_date', { ascending: false })
+  if (occupanciesResult.error && sessionData.session) throw occupanciesResult.error
+  if (!occupanciesResult.error) {
+    houseOccupancies = (occupanciesResult.data as unknown as OccupancyRow[]).map((row) => ({
       id: row.id,
       houseId: row.house_id,
       occupantName: row.occupant_name,
@@ -380,14 +383,20 @@ export async function updateRemoteHouse(house: House, changeDate = new Date().to
   if (previousName.trim() === nextName.trim() && previousRole === nextRole) return
 
   const { data: activeOccupancy, error: activeError } = await client.from('house_occupancies')
-    .select('id')
+    .select('id,start_date')
     .eq('house_id', house.id)
     .is('end_date', null)
     .maybeSingle()
   if (activeError) throw activeError
   if (activeOccupancy) {
+    if (changeDate <= activeOccupancy.start_date) {
+      throw new Error(`Tanggal mulai penanggung jawab baru harus setelah ${activeOccupancy.start_date}.`)
+    }
+    const priorDate = new Date(`${changeDate}T12:00:00Z`)
+    priorDate.setUTCDate(priorDate.getUTCDate() - 1)
+    const previousEndDate = priorDate.toISOString().slice(0, 10)
     const { error: closeError } = await client.from('house_occupancies')
-      .update({ end_date: changeDate })
+      .update({ end_date: previousEndDate })
       .eq('id', activeOccupancy.id)
     if (closeError) throw closeError
   }
@@ -396,9 +405,7 @@ export async function updateRemoteHouse(house: House, changeDate = new Date().to
       house_id: house.id,
       occupant_name: nextName.trim(),
       occupant_role: nextRole,
-      start_date: house.residenceStatus === 'rented' && house.rentalStartDate
-        ? house.rentalStartDate
-        : changeDate,
+      start_date: changeDate,
       notes: 'Dibuat otomatis dari perubahan data rumah',
     })
     if (insertError) throw insertError

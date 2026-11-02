@@ -3,6 +3,7 @@ import type {
   BillingAccount,
   House,
   LedgerData,
+  OccupantRole,
   Payment,
   ReceivableTransaction,
   Tariff,
@@ -53,6 +54,15 @@ export function tariffForMonth(tariffs: Tariff[], month: string) {
 const personForHouse = (house: House) =>
   house.residenceStatus === 'rented' && house.tenant ? house.tenant : house.owner
 
+export const normalizePersonName = (value: string) => value
+  .trim()
+  .toLocaleLowerCase('id-ID')
+  .replace(/\s*\/\s*/g, '/')
+  .replace(/\s+/g, ' ')
+
+export const samePerson = (first: string, second: string) =>
+  Boolean(first.trim() && second.trim()) && normalizePersonName(first) === normalizePersonName(second)
+
 export function buildBillingAccounts(houses: House[]): BillingAccount[] {
   const sorted = [...houses].sort((a, b) => a.id - b.id)
   const jointHouses = sorted.filter((house) => house.id === 2 || house.id === 3)
@@ -99,6 +109,49 @@ export function monthlyFeeForAccount(
   return house.residenceStatus === 'empty' ? tariff.emptyFee : tariff.occupiedFee
 }
 
+export type MonthlyResponsibility = {
+  name: string
+  role: OccupantRole
+  occupancyId: string | null
+}
+
+/**
+ * Iuran satu bulan dibebankan kepada penghuni yang aktif pada tanggal 1 bulan itu.
+ * Jika riwayat belum tersedia, data penghuni aktif menjadi fallback agar data lama
+ * tetap dapat ditampilkan.
+ */
+export function responsibilityForAccountMonth(
+  account: BillingAccount,
+  data: LedgerData,
+  month: string,
+): MonthlyResponsibility {
+  if (account.houseIds.length > 1) {
+    return { name: account.residentName, role: 'owner', occupancyId: null }
+  }
+
+  const houseId = account.houseIds[0]
+  const monthStart = `${month}-01`
+  const occupancy = data.houseOccupancies
+    .filter((item) => item.houseId === houseId
+      && item.startDate <= monthStart
+      && (!item.endDate || item.endDate >= monthStart))
+    .sort((first, second) => second.startDate.localeCompare(first.startDate))[0]
+
+  if (occupancy) {
+    return {
+      name: occupancy.occupantName,
+      role: occupancy.occupantRole,
+      occupancyId: occupancy.id,
+    }
+  }
+
+  return {
+    name: account.residentName,
+    role: account.residenceStatus === 'rented' ? 'tenant' : 'owner',
+    occupancyId: null,
+  }
+}
+
 const paymentTotal = (payment: Payment) =>
   payment.mandatoryAmount + payment.arrearsAmount + payment.extraAmount
 
@@ -113,41 +166,62 @@ export function statementForAccount(
   const accountPayments = data.payments.filter((payment) =>
     account.houseIds.includes(payment.houseId),
   )
-  const paidThisPeriod = accountPayments
+  const belongsToCurrentResident = (month: string) =>
+    samePerson(responsibilityForAccountMonth(account, data, month).name, account.residentName)
+  const currentResidentPayments = accountPayments.filter((payment) =>
+    belongsToCurrentResident(payment.month),
+  )
+  const paidThisPeriod = currentResidentPayments
     .filter((payment) => payment.month === activeMonth)
     .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
-  const monthlyDue = monthlyFeeForAccount(
-    account,
-    data.houses,
-    data.tariffs,
-    data.jointFee0203,
-    activeMonth,
+  const monthlyDue = belongsToCurrentResident(activeMonth)
+    ? monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, activeMonth)
+    : 0
+  const currentOpeningItems = data.openingArrearsItems.filter((item) =>
+    item.houseId !== null
+    && account.houseIds.includes(item.houseId)
+    && samePerson(item.debtorName, account.residentName),
   )
+  const currentOpeningIds = new Set(currentOpeningItems.map((item) => item.id))
+  const currentOpeningOriginal = currentOpeningItems.reduce((sum, item) => sum + item.originalAmount, 0)
   const priorMonths = monthsBetween(START_MONTH, previousMonth(activeMonth))
   const priorCharges = priorMonths.reduce(
     (sum, month) =>
-      sum + monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month),
-    account.openingArrears,
+      sum + (belongsToCurrentResident(month)
+        ? monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
+        : 0),
+    currentOpeningOriginal,
   )
-  const priorMandatoryPaid = accountPayments
+  const priorMandatoryPaid = currentResidentPayments
     .filter((payment) => payment.month < activeMonth)
     .reduce((sum, payment) => sum + payment.mandatoryAmount, 0)
-  const arrearsPaid = accountPayments
-    .filter((payment) => payment.month <= activeMonth)
+  const genericArrearsPaid = currentResidentPayments
+    .filter((payment) => !payment.openingArrearsItemId && payment.paymentDate.slice(0, 7) <= activeMonth)
+    .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
+  const linkedOpeningArrearsPaid = accountPayments
+    .filter((payment) => payment.openingArrearsItemId != null
+      && currentOpeningIds.has(payment.openingArrearsItemId)
+      && payment.paymentDate.slice(0, 7) <= activeMonth)
     .reduce((sum, payment) => sum + payment.arrearsAmount, 0)
   const dedicatedOpeningArrearsPaid = data.openingArrearsPayments
     .filter((payment) => payment.paymentDate.slice(0, 7) <= activeMonth)
-    .filter((payment) => {
-      const item = data.openingArrearsItems.find((arrears) => arrears.id === payment.openingArrearsItemId)
-      return item?.houseId != null && account.houseIds.includes(item.houseId)
-    })
+    .filter((payment) => currentOpeningIds.has(payment.openingArrearsItemId))
     .reduce((sum, payment) => sum + payment.amount, 0)
+  const openingArrears = Math.max(
+    currentOpeningOriginal - linkedOpeningArrearsPaid - dedicatedOpeningArrearsPaid,
+    0,
+  )
   const currentBalance = Math.max(monthlyDue - paidThisPeriod, 0)
-  const arrearsBalance = Math.max(priorCharges - priorMandatoryPaid - arrearsPaid - dedicatedOpeningArrearsPaid, 0)
+  const arrearsBalance = Math.max(
+    priorCharges - priorMandatoryPaid - genericArrearsPaid
+      - linkedOpeningArrearsPaid - dedicatedOpeningArrearsPaid,
+    0,
+  )
   const totalOutstanding = currentBalance + arrearsBalance
 
   return {
     ...account,
+    openingArrears,
     monthlyDue,
     paidThisPeriod,
     currentBalance,
