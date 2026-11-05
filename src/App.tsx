@@ -8,19 +8,20 @@ import {
 import './App.css'
 import {
   buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
-  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, receivableCashMovement,
-  responsibilityForAccountMonth, samePerson, statementForAccount, tariffForMonth,
+  DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, monthsBetween, normalizePersonName,
+  receivableCashMovement, responsibilityForAccountMonth, samePerson, START_MONTH,
+  statementForAccount, tariffForMonth,
 } from './domain'
 import {
-  createRemoteExpense, createRemoteOccupancy, createRemoteOpeningArrearsItem, createRemotePayments,
+  createRemoteExpense, createRemoteOpeningArrearsItem, createRemotePayments,
   createRemoteOpeningArrearsPayment, createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
-  deleteRemoteOccupancy, deleteRemoteOpeningArrearsItem, deleteRemoteOpeningArrearsPayment, deleteRemotePayment,
+  deleteRemoteOpeningArrearsItem, deleteRemoteOpeningArrearsPayment, deleteRemotePayment,
   deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
   updateRemoteOpeningArrearsPayment, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type {
-  AdminView, ArrearsDebtorRole, BillingAccount, Expense, House, HouseOccupancy, LedgerData,
+  AdminView, ArrearsDebtorRole, BillingAccount, Expense, House, LedgerData,
   OpeningArrearsItem, OpeningArrearsPayment, Payment, PendingPaymentMonth, PublicView, ReceivableTransaction,
   ResidenceStatus, Tariff,
 } from './types'
@@ -39,6 +40,12 @@ const nextMonthValue = (month: string) => {
   const [year, monthNumber] = month.split('-').map(Number)
   const next = new Date(year, monthNumber, 1)
   return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
+}
+
+const previousDateValue = (date: string) => {
+  const previous = new Date(`${date}T12:00:00Z`)
+  previous.setUTCDate(previous.getUTCDate() - 1)
+  return previous.toISOString().slice(0, 10)
 }
 
 const responsibilityPeriodLabel = (months: string[]) => {
@@ -232,17 +239,15 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
-  const [houseEffectiveDates, setHouseEffectiveDates] = useState<Record<number, string>>({})
+  const [newOccupantForm, setNewOccupantForm] = useState({
+    houseId: '1', occupantName: '', occupantRole: 'owner' as 'owner' | 'tenant', startDate: today,
+  })
   const [arrearsForm, setArrearsForm] = useState({
     houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
     cutoffDate: '2025-12-31', originalAmount: '', notes: '',
   })
   const [arrearsPaymentForm, setArrearsPaymentForm] = useState({
     openingArrearsItemId: '', paymentDate: today, amount: '', method: 'Transfer', notes: '',
-  })
-  const [occupancyForm, setOccupancyForm] = useState({
-    houseId: '1', occupantName: '', occupantRole: 'tenant' as 'owner' | 'tenant',
-    startDate: '2025-01-01', endDate: '2025-12-31', notes: '',
   })
   const [journalQuery, setJournalQuery] = useState('')
   const [journalYear, setJournalYear] = useState('all')
@@ -407,7 +412,59 @@ function App() {
   const collected = statements.reduce((sum, account) => sum + account.paidThisPeriod, 0)
   const totalArrears = statements.reduce((sum, account) => sum + account.arrearsBalance, 0)
   const unpaid = statements.filter((account) => !account.isPaid).length
-  const filteredHouses = data.houses.filter((house) => `${house.number} ${house.owner} ${house.tenant}`.toLowerCase().includes(houseQuery.toLowerCase()))
+  const occupantOutstandingByKey = useMemo(() => {
+    const balances = new Map<string, number>()
+    const uniqueOccupants = new Map<string, { houseId: number, occupantName: string, isActive: boolean }>()
+    data.houseOccupancies.forEach((occupancy) => {
+      const key = `${occupancy.houseId}:${normalizePersonName(occupancy.occupantName)}`
+      const current = uniqueOccupants.get(key)
+      uniqueOccupants.set(key, {
+        houseId: occupancy.houseId,
+        occupantName: occupancy.occupantName,
+        isActive: Boolean(current?.isActive || !occupancy.endDate),
+      })
+    })
+
+    uniqueOccupants.forEach(({ houseId, occupantName, isActive }, key) => {
+      const account = accounts.find((item) => item.houseIds.includes(houseId))
+      if (!account) { balances.set(key, 0); return }
+      const statement = statements.find((item) => item.id === account.id)
+      if (isActive && samePerson(occupantName, account.residentName) && statement) {
+        balances.set(key, statement.totalOutstanding)
+        return
+      }
+
+      const openingOutstanding = openingArrearsBalances
+        .filter((item) => item.houseId !== null
+          && account.houseIds.includes(item.houseId)
+          && samePerson(item.debtorName, occupantName))
+        .reduce((sum, item) => sum + item.outstanding, 0)
+      const monthlyOutstanding = monthsBetween(START_MONTH, currentMonth)
+        .filter((month) => samePerson(responsibilityForAccountMonth(account, data, month).name, occupantName))
+        .reduce((sum, month) => {
+          const due = monthlyFeeForAccount(account, data.houses, data.tariffs, data.jointFee0203, month)
+          const paid = data.payments
+            .filter((payment) => account.houseIds.includes(payment.houseId) && payment.month === month)
+            .reduce((paymentSum, payment) => paymentSum + payment.mandatoryAmount, 0)
+          return sum + Math.max(due - paid, 0)
+        }, 0)
+      balances.set(key, openingOutstanding + monthlyOutstanding)
+    })
+    return balances
+  }, [accounts, data, openingArrearsBalances, statements])
+  const occupantOutstanding = (houseId: number, occupantName: string) =>
+    occupantOutstandingByKey.get(`${houseId}:${normalizePersonName(occupantName)}`) ?? 0
+  const occupancyMatchesSearch = (houseId: number, occupantName: string) => {
+    const house = data.houses.find((item) => item.id === houseId)
+    return `${house?.number ?? houseId} ${occupantName}`.toLowerCase().includes(houseQuery.trim().toLowerCase())
+  }
+  const activeOccupants = data.houseOccupancies
+    .filter((occupancy) => !occupancy.endDate && occupancyMatchesSearch(occupancy.houseId, occupancy.occupantName))
+    .sort((first, second) => first.houseId - second.houseId)
+  const formerOccupants = data.houseOccupancies
+    .filter((occupancy) => Boolean(occupancy.endDate) && occupancyMatchesSearch(occupancy.houseId, occupancy.occupantName))
+    .sort((first, second) => second.endDate.localeCompare(first.endDate) || first.houseId - second.houseId)
+  const selectedNewOccupantHouse = data.houses.find((house) => house.id === Number(newOccupantForm.houseId))
   const monthlyRecap = useMemo(() => Array.from({ length: 12 }, (_, index) => {
     const month = `${recapYear}-${String(index + 1).padStart(2, '0')}`
     const responsibility = responsibilityForAccountMonth(selected, data, month)
@@ -1012,19 +1069,46 @@ function App() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Catatan jurnal gagal diperbarui.') }
   }
 
-  const patchHouse = (id: number, patch: Partial<House>) => setData((current) => ({ ...current, houses: current.houses.map((house) => house.id === id ? { ...house, ...patch } : house) }))
-  const persistHouse = async (house: House) => {
-    try {
-      const effectiveDate = houseEffectiveDates[house.id] || today
-      if (supabaseConfigured) { await updateRemoteHouse(house, effectiveDate); await loadData() }
-      setHouseEffectiveDates((current) => {
-        const next = { ...current }
-        delete next[house.id]
-        return next
-      })
-      flash(`${house.number} diperbarui. Penanggung jawab berlaku mulai ${effectiveDate}.`)
+  const saveNewOccupant = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const house = data.houses.find((item) => item.id === Number(newOccupantForm.houseId))
+    const occupantName = newOccupantForm.occupantName.trim()
+    if (!house) { setError('Pilih nomor rumah.'); return }
+    if (!occupantName) { setError('Nama penghuni baru wajib diisi.'); return }
+    const currentOccupancy = data.houseOccupancies.find((item) => item.houseId === house.id && !item.endDate)
+    if (currentOccupancy && samePerson(currentOccupancy.occupantName, occupantName)
+      && currentOccupancy.occupantRole === newOccupantForm.occupantRole) {
+      setError(`${occupantName} sudah tercatat sebagai penghuni aktif ${house.number}.`); return
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Data rumah gagal disimpan.') }
+    if (currentOccupancy && newOccupantForm.startDate <= currentOccupancy.startDate) {
+      setError(`Tanggal mulai penghuni baru harus setelah ${currentOccupancy.startDate}.`); return
+    }
+
+    const nextHouse: House = newOccupantForm.occupantRole === 'owner'
+      ? { ...house, owner: occupantName, residenceStatus: 'owner_occupied', tenant: '', rentalStartDate: '' }
+      : { ...house, residenceStatus: 'rented', tenant: occupantName, rentalStartDate: newOccupantForm.startDate }
+    try {
+      if (supabaseConfigured) {
+        await updateRemoteHouse(nextHouse, newOccupantForm.startDate)
+        await loadData()
+      } else {
+        const nextOccupancy = {
+          id: crypto.randomUUID(), houseId: house.id, occupantName,
+          occupantRole: newOccupantForm.occupantRole, startDate: newOccupantForm.startDate,
+          endDate: '', notes: 'Dibuat dari penambahan penghuni baru',
+        }
+        setData((current) => ({
+          ...current,
+          houses: current.houses.map((item) => item.id === house.id ? nextHouse : item),
+          houseOccupancies: [nextOccupancy, ...current.houseOccupancies.map((item) =>
+            item.houseId === house.id && !item.endDate
+              ? { ...item, endDate: previousDateValue(newOccupantForm.startDate) }
+              : item)],
+        }))
+      }
+      setNewOccupantForm((form) => ({ ...form, occupantName: '', startDate: today }))
+      flash(`${occupantName} ditambahkan sebagai ${occupantRoleLabel[newOccupantForm.occupantRole].toLowerCase()} aktif ${house.number}. Penghuni sebelumnya dipindahkan ke riwayat.`)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Penghuni baru gagal disimpan.') }
   }
 
   const saveOpeningArrearsItem = async (event: FormEvent) => {
@@ -1081,33 +1165,6 @@ function App() {
       setData((current) => ({ ...current, openingArrearsPayments: current.openingArrearsPayments.filter((row) => row.id !== payment.id) }))
       flash('Pembayaran tunggakan dihapus dan saldo dihitung ulang.')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembayaran tunggakan gagal dihapus.') }
-  }
-
-  const saveOccupancy = async (event: FormEvent) => {
-    event.preventDefault(); setError('')
-    if (!occupancyForm.occupantName.trim()) { setError('Nama penghuni wajib diisi.'); return }
-    if (occupancyForm.endDate < occupancyForm.startDate) { setError('Tanggal selesai tidak boleh mendahului tanggal mulai.'); return }
-    const occupancy: HouseOccupancy = {
-      id: crypto.randomUUID(), houseId: Number(occupancyForm.houseId), occupantName: occupancyForm.occupantName.trim(),
-      occupantRole: occupancyForm.occupantRole, startDate: occupancyForm.startDate,
-      endDate: occupancyForm.endDate, notes: occupancyForm.notes.trim(),
-    }
-    try {
-      if (supabaseConfigured) { await createRemoteOccupancy(occupancy); await loadData() }
-      else setData((current) => ({ ...current, houseOccupancies: [occupancy, ...current.houseOccupancies] }))
-      setOccupancyForm((form) => ({ ...form, occupantName: '', notes: '' }))
-      flash(`Riwayat ${occupancy.occupantName} berhasil dicatat.`)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Riwayat penghuni gagal disimpan.') }
-  }
-
-  const removeOccupancy = async (occupancy: HouseOccupancy) => {
-    if (!occupancy.endDate) { setError('Penghuni aktif tidak dapat dihapus dari riwayat. Ubah data rumah untuk menggantinya.'); return }
-    if (!window.confirm(`Hapus riwayat penghuni ${occupancy.occupantName}?`)) return
-    try {
-      if (supabaseConfigured) await deleteRemoteOccupancy(occupancy.id)
-      setData((current) => ({ ...current, houseOccupancies: current.houseOccupancies.filter((row) => row.id !== occupancy.id) }))
-      flash('Riwayat penghuni dihapus.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Riwayat penghuni gagal dihapus.') }
   }
 
   const saveSettings = async (event: FormEvent) => {
@@ -1380,20 +1437,25 @@ function App() {
         </>}
 
         {adminView === 'houses' && <>
-          <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Kelola data rumah, penghuni aktif, serta riwayat perubahan penyewa.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
-          <section className="panel house-editor"><div className="panel-title"><div><span>Data penghuni saat ini</span><h3>Rumah dan Penanggung Jawab Aktif</h3><p>Identitas akun iuran adalah nomor rumah + nama penghuni. Saat nama/status berubah, isi tanggal mulai agar kewajiban sebelum tanggal tersebut tetap tercatat atas nama penghuni lama.</p></div></div><div className="table-wrap"><table className="house-responsibility-table"><thead><tr><th>Rumah</th><th>Pemilik</th><th>Status</th><th>Penghuni/penyewa</th><th>Mulai sewa</th><th>Mulai tagihan</th><th>Nama baru berlaku</th><th /></tr></thead><tbody>{filteredHouses.map((house) => <tr key={house.id}><td><strong>{house.number}</strong>{house.id === 2 || house.id === 3 ? <small className="joint-note">Akun gabungan</small> : null}</td><td><input value={house.owner} onChange={(e) => patchHouse(house.id, { owner: e.target.value })} /></td><td><select value={house.residenceStatus} onChange={(e) => patchHouse(house.id, { residenceStatus: e.target.value as ResidenceStatus })}><option value="owner_occupied">Dihuni pemilik</option><option value="rented">Disewa</option><option value="empty">Kosong</option></select></td><td><input disabled={house.residenceStatus !== 'rented'} placeholder="Nama penyewa" value={house.tenant} onChange={(e) => patchHouse(house.id, { tenant: e.target.value })} /></td><td><input type="date" disabled={house.residenceStatus !== 'rented'} value={house.rentalStartDate} onChange={(e) => patchHouse(house.id, { rentalStartDate: e.target.value })} /></td><td><input type="month" min="2026-01" value={house.billingStartMonth} onChange={(e) => patchHouse(house.id, { billingStartMonth: e.target.value })} /></td><td><input aria-label={`Tanggal mulai penanggung jawab ${house.number}`} type="date" value={houseEffectiveDates[house.id] ?? today} onChange={(event) => setHouseEffectiveDates((current) => ({ ...current, [house.id]: event.target.value }))} /></td><td><button className="small-action" type="button" onClick={() => void persistHouse(house)}>Simpan</button></td></tr>)}</tbody></table></div></section>
-          <section className="panel occupancy-history-panel">
-            <div className="panel-title"><div><span>Jejak perubahan</span><h3>Riwayat Penghuni</h3><p>Gunakan formulir ini untuk memasukkan periode lama. Penghuni aktif dikelola melalui tabel rumah di atas.</p></div></div>
-            <form className="form-grid trace-form" onSubmit={saveOccupancy}>
-              <label>Rumah<select value={occupancyForm.houseId} onChange={(event) => setOccupancyForm({ ...occupancyForm, houseId: event.target.value })}>{data.houses.map((house) => <option key={house.id} value={house.id}>{house.number}</option>)}</select></label>
-              <label>Nama penghuni<input required value={occupancyForm.occupantName} onChange={(event) => setOccupancyForm({ ...occupancyForm, occupantName: event.target.value })} /></label>
-              <label>Peran<select value={occupancyForm.occupantRole} onChange={(event) => setOccupancyForm({ ...occupancyForm, occupantRole: event.target.value as 'owner' | 'tenant' })}><option value="owner">Pemilik</option><option value="tenant">Penyewa</option></select></label>
-              <label>Mulai menghuni<input type="date" required value={occupancyForm.startDate} onChange={(event) => setOccupancyForm({ ...occupancyForm, startDate: event.target.value })} /></label>
-              <label>Selesai menghuni<input type="date" required value={occupancyForm.endDate} onChange={(event) => setOccupancyForm({ ...occupancyForm, endDate: event.target.value })} /></label>
-              <label>Catatan<input placeholder="Opsional" value={occupancyForm.notes} onChange={(event) => setOccupancyForm({ ...occupancyForm, notes: event.target.value })} /></label>
-              <button className="primary-action wide" type="submit"><Plus size={18} />Tambah periode penghuni lama</button>
+          <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Penghuni aktif ditampilkan terpisah dari riwayat penghuni yang sudah tidak tinggal di CSJ.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
+          <section className="panel new-occupant-panel">
+            <div className="panel-title"><div><span>Perubahan penghuni</span><h3>Tambahkan Penghuni Baru</h3><p>Pilih pemilik atau penyewa. Penghuni aktif sebelumnya otomatis dipindahkan ke tabel riwayat dengan tanggal selesai satu hari sebelum tanggal mulai baru.</p></div></div>
+            <form className="new-occupant-form" onSubmit={saveNewOccupant}>
+              <label>Nomor rumah<select value={newOccupantForm.houseId} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, houseId: event.target.value })}>{data.houses.map((house) => <option key={house.id} value={house.id}>{house.number}</option>)}</select></label>
+              <label>Nama penghuni baru<input required placeholder="Nama pemilik atau penyewa" value={newOccupantForm.occupantName} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, occupantName: event.target.value })} /></label>
+              <label>Status penghuni<select value={newOccupantForm.occupantRole} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, occupantRole: event.target.value as 'owner' | 'tenant' })}><option value="owner">Pemilik</option><option value="tenant">Penyewa</option></select></label>
+              <label>Tanggal mulai<input type="date" required value={newOccupantForm.startDate} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, startDate: event.target.value })} /></label>
+              <button className="primary-action" type="submit"><Plus size={18} />Simpan penghuni baru</button>
             </form>
-            <div className="table-wrap"><table className="trace-table"><thead><tr><th>Rumah</th><th>Nama</th><th>Peran</th><th>Mulai</th><th>Selesai</th><th>Catatan</th><th /></tr></thead><tbody>{data.houseOccupancies.length ? [...data.houseOccupancies].sort((a, b) => b.startDate.localeCompare(a.startDate)).map((occupancy) => <tr key={occupancy.id}><td><strong>{data.houses.find((house) => house.id === occupancy.houseId)?.number ?? `CSJ ${occupancy.houseId}`}</strong></td><td>{occupancy.occupantName}</td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td>{occupancy.endDate || <span className="current-occupant-badge">Aktif</span>}</td><td>{occupancy.notes || '—'}</td><td><button className="icon-button danger" disabled={!occupancy.endDate} onClick={() => void removeOccupancy(occupancy)} title={occupancy.endDate ? 'Hapus riwayat' : 'Penghuni aktif tidak dapat dihapus'} type="button"><Trash2 size={15} /></button></td></tr>) : <tr><td colSpan={7}><div className="empty-state">Belum ada riwayat penghuni.</div></td></tr>}</tbody></table></div>
+            {selectedNewOccupantHouse && <small className="occupant-change-note">Rumah terpilih: <strong>{selectedNewOccupantHouse.number}</strong>. Data pemilik rumah tetap dipertahankan ketika status baru adalah penyewa.</small>}
+          </section>
+          <section className="panel active-occupants-panel">
+            <div className="panel-title"><div><span>{activeOccupants.length} penghuni aktif</span><h3>Penghuni Aktif</h3><p>Hanya pihak yang saat ini tinggal dan bertanggung jawab atas iuran rumah yang ditampilkan di sini.</p></div></div>
+            <div className="table-wrap"><table className="occupancy-ledger-table"><thead><tr><th>Nomor rumah</th><th>Nama</th><th>Status</th><th>Tanggal mulai</th><th>Tanggal selesai</th><th>Tunggakan</th></tr></thead><tbody>{activeOccupants.length ? activeOccupants.map((occupancy) => { const house = data.houses.find((item) => item.id === occupancy.houseId); const outstanding = occupantOutstanding(occupancy.houseId, occupancy.occupantName); return <tr key={occupancy.id}><td><strong>{house?.number ?? `CSJ ${occupancy.houseId}`}</strong>{occupancy.houseId === 2 || occupancy.houseId === 3 ? <small className="joint-note">Akun gabungan 02+03</small> : null}</td><td><strong>{occupancy.occupantName}</strong></td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td><span className="current-occupant-badge">Masih aktif</span></td><td>{outstanding > 0 ? <strong className="occupancy-outstanding">{rupiah.format(outstanding)}</strong> : <span className="mini-status paid">Lunas</span>}</td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Tidak ada penghuni aktif yang sesuai pencarian.</div></td></tr>}</tbody></table></div>
+          </section>
+          <section className="panel occupancy-history-panel">
+            <div className="panel-title"><div><span>{formerOccupants.length} catatan</span><h3>Riwayat Penghuni yang Sudah Tidak Tinggal di CSJ</h3><p>Catatan ini tersimpan otomatis ketika penghuni baru ditambahkan. Tunggakan tetap melekat pada kombinasi nomor rumah dan nama penghuni lama.</p></div></div>
+            <div className="table-wrap"><table className="occupancy-ledger-table"><thead><tr><th>Nomor rumah</th><th>Nama</th><th>Status</th><th>Tanggal mulai</th><th>Tanggal selesai</th><th>Tunggakan</th></tr></thead><tbody>{formerOccupants.length ? formerOccupants.map((occupancy) => { const house = data.houses.find((item) => item.id === occupancy.houseId); const outstanding = occupantOutstanding(occupancy.houseId, occupancy.occupantName); return <tr key={occupancy.id}><td><strong>{house?.number ?? `CSJ ${occupancy.houseId}`}</strong>{occupancy.houseId === 2 || occupancy.houseId === 3 ? <small className="joint-note">Akun gabungan 02+03</small> : null}</td><td><strong>{occupancy.occupantName}</strong></td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td>{occupancy.endDate}</td><td>{outstanding > 0 ? <strong className="occupancy-outstanding">{rupiah.format(outstanding)}</strong> : <span className="mini-status paid">Lunas</span>}</td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Belum ada penghuni lama yang tercatat atau tidak ada hasil pencarian.</div></td></tr>}</tbody></table></div>
           </section>
         </>}
 

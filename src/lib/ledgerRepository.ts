@@ -419,6 +419,30 @@ export async function updateRemoteHouse(house: House, changeDate = new Date().to
     .single()
   if (previousError) throw previousError
 
+  const previousName = previous.residence_status === 'rented'
+    ? (previous.tenant_name ?? '')
+    : previous.residence_status === 'owner_occupied' ? previous.owner_name : ''
+  const previousRole = previous.residence_status === 'rented' ? 'tenant' : 'owner'
+  const nextName = house.residenceStatus === 'rented'
+    ? house.tenant
+    : house.residenceStatus === 'owner_occupied' ? house.owner : ''
+  const nextRole = house.residenceStatus === 'rented' ? 'tenant' : 'owner'
+  const occupantChanged = previousName.trim() !== nextName.trim() || previousRole !== nextRole
+
+  let activeOccupancy: { id: string, start_date: string } | null = null
+  if (occupantChanged) {
+    const { data, error: activeError } = await client.from('house_occupancies')
+      .select('id,start_date')
+      .eq('house_id', house.id)
+      .is('end_date', null)
+      .maybeSingle()
+    if (activeError) throw activeError
+    activeOccupancy = data
+    if (activeOccupancy && changeDate <= activeOccupancy.start_date) {
+      throw new Error(`Tanggal mulai penanggung jawab baru harus setelah ${activeOccupancy.start_date}.`)
+    }
+  }
+
   const { error } = await client.from('houses').update({
     owner_name: house.owner,
     residence_status: house.residenceStatus,
@@ -429,27 +453,9 @@ export async function updateRemoteHouse(house: House, changeDate = new Date().to
     billing_start_month: `${house.billingStartMonth}-01`,
   }).eq('id', house.id)
   if (error) throw error
+  if (!occupantChanged) return
 
-  const previousName = previous.residence_status === 'rented'
-    ? (previous.tenant_name ?? '')
-    : previous.residence_status === 'owner_occupied' ? previous.owner_name : ''
-  const previousRole = previous.residence_status === 'rented' ? 'tenant' : 'owner'
-  const nextName = house.residenceStatus === 'rented'
-    ? house.tenant
-    : house.residenceStatus === 'owner_occupied' ? house.owner : ''
-  const nextRole = house.residenceStatus === 'rented' ? 'tenant' : 'owner'
-  if (previousName.trim() === nextName.trim() && previousRole === nextRole) return
-
-  const { data: activeOccupancy, error: activeError } = await client.from('house_occupancies')
-    .select('id,start_date')
-    .eq('house_id', house.id)
-    .is('end_date', null)
-    .maybeSingle()
-  if (activeError) throw activeError
   if (activeOccupancy) {
-    if (changeDate <= activeOccupancy.start_date) {
-      throw new Error(`Tanggal mulai penanggung jawab baru harus setelah ${activeOccupancy.start_date}.`)
-    }
     const priorDate = new Date(`${changeDate}T12:00:00Z`)
     priorDate.setUTCDate(priorDate.getUTCDate() - 1)
     const previousEndDate = priorDate.toISOString().slice(0, 10)
