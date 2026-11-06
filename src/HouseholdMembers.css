@@ -6,3 +6,12 @@
 @media(max-width:1100px){.household-house-grid{grid-template-columns:repeat(8,1fr)}.household-save-grid{grid-template-columns:1fr 1fr}.household-save-grid .primary-action{width:100%}}
 @media(max-width:800px){.household-hero{grid-template-columns:1fr}.household-house-grid{grid-template-columns:repeat(5,1fr)}.household-summary-cards,.household-admin-summary{grid-template-columns:1fr}.household-unlock{align-items:stretch;grid-template-columns:1fr}.household-unlock .household-message{grid-column:auto}.household-admin-list summary{grid-template-columns:1fr auto}.household-admin-list summary>strong{grid-column:1/-1}.household-save-grid{grid-template-columns:1fr}.household-dropdown{grid-template-columns:1fr}.household-form-heading{align-items:flex-start;flex-direction:column}}
 @media(max-width:520px){.household-hero{padding:23px 20px}.household-hero h2{font-size:26px}.household-house-grid{grid-template-columns:repeat(4,1fr)}.household-legend{align-items:flex-start;flex-direction:column}.household-stat-heading{align-items:flex-start}.household-stat-icon{display:none}.household-chart-controls{display:grid;grid-template-columns:1fr 1fr}.household-admin-file{align-items:flex-start;flex-direction:column;gap:10px}.household-admin-file button{width:100%}}
+
+/* Compact upload control and align both PIN fields on one baseline. */
+.household-save-grid{grid-template-columns:minmax(180px,220px) minmax(180px,1fr) minmax(180px,1fr) auto;padding:14px}
+.household-save-grid label small{line-height:1.4;min-height:31px}
+.household-save-grid input[type=file]{font-size:10px;min-height:38px;padding:5px 6px}
+.household-save-grid .household-kk-field{max-width:220px}
+.household-save-button{min-width:82px}
+@media(max-width:1100px){.household-save-grid{grid-template-columns:1fr 1fr}.household-save-grid .household-kk-field{max-width:none}}
+@media(max-width:800px){.household-save-grid{grid-template-columns:1fr}}

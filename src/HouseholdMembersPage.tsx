@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BarChart3, Check, FileUp, Home, Plus, ShieldCheck, Trash2, Users, X } from 'lucide-react'
+import { BarChart3, Check, Home, Plus, ShieldCheck, Trash2, Users, X } from 'lucide-react'
 import {
   loadHouseholdStatistics,
   loadHouseholdStatuses,
@@ -139,9 +139,8 @@ export default function HouseholdMembersPage({ accounts }: { accounts: Household
         houseId: selectedAccount.houseId, residentName: selectedAccount.residentName,
         editCode, members: filledMembers, kkPath, kkName: kkFile?.name,
       })
-      setMembers(minimumRows(filledMembers)); setStoredKkName(kkFile?.name || storedKkName)
-      setKkFile(null); setConfirmCode(''); setMode('edit')
       await refresh()
+      resetForm(); setMode('closed')
       setNotice('Data household member berhasil disimpan. Kotak rumah sekarang berwarna hijau.')
     } catch (reason) { setError(message(reason)) }
     finally { setBusy(false) }
@@ -157,6 +156,7 @@ export default function HouseholdMembersPage({ accounts }: { accounts: Household
       <div className="panel-title"><div><span>Status pengisian</span><h3>Pilih Nomor Rumah</h3><p>Hijau berarti data sudah tersimpan; merah berarti belum diisi.</p></div><div className="household-legend"><span><i className="filled" />Sudah diisi</span><span><i className="empty" />Belum diisi</span></div></div>
       <div className="household-house-grid">{accounts.map((account) => { const filled = statusMap.has(account.houseId); return <button className={`${filled ? 'filled' : 'empty'} ${selectedHouseId === account.houseId && mode !== 'closed' ? 'selected' : ''}`} key={account.houseId} onClick={() => openAccount(account)} type="button"><strong>{account.shortCode}</strong><span>{filled ? <><Check size={12} />Sudah diisi</> : <><X size={12} />Belum</>}</span></button> })}</div>
       <div className="household-dropdown"><label>Nomor rumah dan penghuni aktif<select value={selectedHouseId} onChange={(event) => setSelectedHouseId(Number(event.target.value))}>{accounts.map((account) => <option key={account.houseId} value={account.houseId}>{account.code} · {account.residentName}</option>)}</select></label><button className="primary-action" onClick={() => selectedAccount && openAccount(selectedAccount)} type="button">Buka Form</button></div>
+      {mode === 'closed' && notice && <p className="household-message success">{notice}</p>}
     </section>
 
     {mode === 'unlock' && selectedAccount && <section className="panel household-unlock">
@@ -170,10 +170,10 @@ export default function HouseholdMembersPage({ accounts }: { accounts: Household
       <div className="household-form-heading"><div><span>{mode === 'new' ? 'Pengisian baru' : 'Pembaruan data'}</span><h3>{selectedAccount.code} · {selectedAccount.residentName}</h3><p>Tambahkan satu baris untuk setiap anggota keluarga atau orang lain yang tinggal bersama.</p></div><button className="secondary-action" onClick={() => setMembers((current) => [...current, emptyMember()])} type="button"><Plus size={16} />Tambah baris</button></div>
       <div className="household-member-table-wrap"><table className="household-member-table"><thead><tr><th>No.</th><th>Nama</th><th>Jenis Kelamin</th><th>Hubungan Keluarga</th><th>Tanggal Lahir</th><th>Anggota KK</th><th>Tinggal di Rumah</th><th /></tr></thead><tbody>{members.map((member, index) => <tr key={member.id}><td><strong>{index + 1}</strong></td><td><input aria-label={`Nama anggota ${index + 1}`} placeholder="Nama lengkap" value={member.name} onBlur={() => updateMember(member.id, { name: titleCaseName(member.name) })} onChange={(event) => updateMember(member.id, { name: event.target.value })} /></td><td><select aria-label={`Jenis kelamin anggota ${index + 1}`} value={member.gender} onChange={(event) => updateMember(member.id, { gender: event.target.value as HouseholdMember['gender'] })}><option value="">Pilih</option><option value="male">Laki-laki</option><option value="female">Perempuan</option></select></td><td><select aria-label={`Hubungan keluarga anggota ${index + 1}`} value={member.relationship} onChange={(event) => updateMember(member.id, { relationship: event.target.value as HouseholdMember['relationship'] })}><option value="">Pilih</option>{relationships.map((relationship) => <option key={relationship}>{relationship}</option>)}</select></td><td><input aria-label={`Tanggal lahir anggota ${index + 1}`} type="date" max={new Date().toLocaleDateString('sv-SE')} value={member.birthDate} onChange={(event) => updateMember(member.id, { birthDate: event.target.value })} /></td><td><YesNo value={member.inFamilyCard} onChange={(value) => updateMember(member.id, { inFamilyCard: value })} /></td><td><YesNo value={member.livesInHouse} onChange={(value) => updateMember(member.id, { livesInHouse: value })} /></td><td><button className="household-delete-row" aria-label={`Hapus baris ${index + 1}`} onClick={() => removeMember(member.id)} type="button"><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>
       <div className="household-save-grid">
-        <label>Kartu Keluarga (opsional)<input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(event) => setKkFile(event.target.files?.[0] ?? null)} /><small>Boleh dikosongkan. Jika diunggah: PDF, JPG, atau PNG · maksimal 5 MB.{storedKkName ? ` KK tersimpan: ${storedKkName}` : ''}</small></label>
-        <label>Kode pembaruan 6 digit<input inputMode="numeric" maxLength={6} placeholder="Contoh: 123456" value={editCode} onChange={(event) => setEditCode(event.target.value.replace(/\D/g, ''))} /><small>Simpan kode ini untuk pembaruan berikutnya.</small></label>
-        {mode === 'new' && <label>Konfirmasi kode<input inputMode="numeric" maxLength={6} placeholder="Ulangi 6 digit" value={confirmCode} onChange={(event) => setConfirmCode(event.target.value.replace(/\D/g, ''))} /></label>}
-        <button className="primary-action" disabled={busy} onClick={() => void submit()} type="button"><FileUp size={17} />{busy ? 'Menyimpan…' : 'Simpan Household Member'}</button>
+        <label className="household-kk-field">Kartu Keluarga (opsional)<input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(event) => setKkFile(event.target.files?.[0] ?? null)} /><small>PDF/JPG/PNG · maks. 5 MB.{storedKkName ? ` Tersimpan: ${storedKkName}` : ''}</small></label>
+        <label>PIN pembaruan 6 digit<input inputMode="numeric" maxLength={6} placeholder="Contoh: 123456" value={editCode} onChange={(event) => setEditCode(event.target.value.replace(/\D/g, ''))} /><small>Simpan PIN untuk pembaruan berikutnya.</small></label>
+        {mode === 'new' && <label>Konfirmasi PIN<input inputMode="numeric" maxLength={6} placeholder="Ulangi 6 digit" value={confirmCode} onChange={(event) => setConfirmCode(event.target.value.replace(/\D/g, ''))} /><small>Masukkan kembali PIN yang sama.</small></label>}
+        <button className="primary-action household-save-button" disabled={busy} onClick={() => void submit()} type="button">{busy ? 'Menyimpan…' : 'Save'}</button>
       </div>
       {error && <p className="household-message error">{error}</p>}{notice && <p className="household-message success">{notice}</p>}
     </section>}
