@@ -6,6 +6,10 @@ import {
   Trash2, TrendingUp, Users, WalletCards, X,
 } from 'lucide-react'
 import './App.css'
+import HouseDirectory from './HouseDirectory'
+import HouseholdMembersAdmin from './HouseholdMembersAdmin'
+import HouseholdMembersPage from './HouseholdMembersPage'
+import type { HouseholdAccount } from './householdTypes'
 import {
   buildBillingAccounts, cashSummary, DEFAULT_EMPTY_FEE, DEFAULT_JOINT_FEE,
   DEFAULT_OCCUPIED_FEE, monthLabel, monthlyFeeForAccount, monthsBetween, normalizePersonName,
@@ -16,7 +20,7 @@ import {
   createRemoteExpense, createRemoteOpeningArrearsItem, createRemotePayments,
   createRemoteOpeningArrearsPayment, createRemoteReceivableTransaction, createRemoteTariff, currentUserIsAdmin, deleteRemoteExpense,
   deleteRemoteOpeningArrearsItem, deleteRemoteOpeningArrearsPayment, deleteRemotePayment,
-  deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense, updateRemoteHouse,
+  deleteRemoteReceivableTransaction, loadRemoteLedger, updateRemoteExpense,
   updateRemoteOpeningArrearsPayment, updateRemotePayment, updateRemoteReceivableTransaction, updateRemoteSettings,
 } from './lib/ledgerRepository'
 import { supabase, supabaseConfigured } from './lib/supabase'
@@ -40,12 +44,6 @@ const nextMonthValue = (month: string) => {
   const [year, monthNumber] = month.split('-').map(Number)
   const next = new Date(year, monthNumber, 1)
   return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
-}
-
-const previousDateValue = (date: string) => {
-  const previous = new Date(`${date}T12:00:00Z`)
-  previous.setUTCDate(previous.getUTCDate() - 1)
-  return previous.toISOString().slice(0, 10)
 }
 
 const responsibilityPeriodLabel = (months: string[]) => {
@@ -239,9 +237,6 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ openingCashBalance: '0', jointFee0203: String(DEFAULT_JOINT_FEE), bankName: '', bankAccountNumber: '', bankAccountHolder: '' })
   const [tariffForm, setTariffForm] = useState({ effectiveDate: `${activeMonth}-01`, occupiedFee: String(DEFAULT_OCCUPIED_FEE), emptyFee: String(DEFAULT_EMPTY_FEE), notes: '' })
   const [houseQuery, setHouseQuery] = useState('')
-  const [newOccupantForm, setNewOccupantForm] = useState({
-    houseId: '1', occupantName: '', occupantRole: 'owner' as 'owner' | 'tenant', startDate: today,
-  })
   const [arrearsForm, setArrearsForm] = useState({
     houseId: '', debtorName: '', debtorRole: 'former_tenant' as ArrearsDebtorRole,
     cutoffDate: '2025-12-31', originalAmount: '', notes: '',
@@ -255,8 +250,9 @@ function App() {
   const [journalSort, setJournalSort] = useState<'asc' | 'desc'>('asc')
   const [journalEdit, setJournalEdit] = useState<JournalEditForm | null>(null)
 
-  const loadData = async () => {
-    setLoading(true); setError('')
+  const loadData = async (background = false) => {
+    if (!background) setLoading(true)
+    setError('')
     try {
       const loadedLedger = supabaseConfigured ? await loadRemoteLedger() : JSON.parse(localStorage.getItem('csj-ledger-v2') || 'null') ?? seedLedger
       const ledger: LedgerData = {
@@ -278,7 +274,7 @@ function App() {
       setCanEdit(supabaseConfigured ? await currentUserIsAdmin() : true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Data belum dapat dimuat.')
-    } finally { setLoading(false) }
+    } finally { if (!background) setLoading(false) }
   }
 
   // Initial loading intentionally synchronizes React with Supabase/local storage.
@@ -294,6 +290,17 @@ function App() {
   }, [])
 
   const accounts = useMemo(() => buildBillingAccounts(data.houses), [data.houses])
+  const householdAccounts = useMemo<HouseholdAccount[]>(() => accounts
+    .filter((account) => account.residenceStatus !== 'empty' && account.residentName.trim())
+    .map((account) => ({
+      houseId: account.houseIds[0],
+      houseIds: account.houseIds,
+      code: account.code,
+      shortCode: account.houseIds.length > 1
+        ? account.houseIds.map((id) => String(id).padStart(2, '0')).join('+')
+        : String(account.houseIds[0]).padStart(2, '0'),
+      residentName: account.residentName,
+    })), [accounts])
   const statements = useMemo(() => accounts.map((account) => statementForAccount(account, data, activeMonth)), [accounts, data, activeMonth])
   const selected = statements.find((account) => account.id === selectedAccountId) ?? statements[0]
   const selectedOtherReceiptResponsibility = responsibilityForAccountMonth(selected, data, paymentForm.otherPeriod)
@@ -415,6 +422,13 @@ function App() {
   const occupantOutstandingByKey = useMemo(() => {
     const balances = new Map<string, number>()
     const uniqueOccupants = new Map<string, { houseId: number, occupantName: string, isActive: boolean }>()
+    data.houses.forEach(house => {
+      uniqueOccupants.set(`${house.id}:${normalizePersonName(house.owner)}`, { houseId: house.id, occupantName: house.owner, isActive: house.residenceStatus !== 'rented' })
+    })
+    openingArrearsBalances.forEach(item => {
+      const key = `${item.houseId}:${normalizePersonName(item.debtorName)}`
+      if (item.houseId !== null && !uniqueOccupants.has(key)) uniqueOccupants.set(key, { houseId: item.houseId, occupantName: item.debtorName, isActive: false })
+    })
     data.houseOccupancies.forEach((occupancy) => {
       const key = `${occupancy.houseId}:${normalizePersonName(occupancy.occupantName)}`
       const current = uniqueOccupants.get(key)
@@ -464,7 +478,6 @@ function App() {
   const formerOccupants = data.houseOccupancies
     .filter((occupancy) => Boolean(occupancy.endDate) && occupancyMatchesSearch(occupancy.houseId, occupancy.occupantName))
     .sort((first, second) => second.endDate.localeCompare(first.endDate) || first.houseId - second.houseId)
-  const selectedNewOccupantHouse = data.houses.find((house) => house.id === Number(newOccupantForm.houseId))
   const monthlyRecap = useMemo(() => Array.from({ length: 12 }, (_, index) => {
     const month = `${recapYear}-${String(index + 1).padStart(2, '0')}`
     const responsibility = responsibilityForAccountMonth(selected, data, month)
@@ -1069,48 +1082,6 @@ function App() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Catatan jurnal gagal diperbarui.') }
   }
 
-  const saveNewOccupant = async (event: FormEvent) => {
-    event.preventDefault(); setError('')
-    const house = data.houses.find((item) => item.id === Number(newOccupantForm.houseId))
-    const occupantName = newOccupantForm.occupantName.trim()
-    if (!house) { setError('Pilih nomor rumah.'); return }
-    if (!occupantName) { setError('Nama penghuni baru wajib diisi.'); return }
-    const currentOccupancy = data.houseOccupancies.find((item) => item.houseId === house.id && !item.endDate)
-    if (currentOccupancy && samePerson(currentOccupancy.occupantName, occupantName)
-      && currentOccupancy.occupantRole === newOccupantForm.occupantRole) {
-      setError(`${occupantName} sudah tercatat sebagai penghuni aktif ${house.number}.`); return
-    }
-    if (currentOccupancy && newOccupantForm.startDate <= currentOccupancy.startDate) {
-      setError(`Tanggal mulai penghuni baru harus setelah ${currentOccupancy.startDate}.`); return
-    }
-
-    const nextHouse: House = newOccupantForm.occupantRole === 'owner'
-      ? { ...house, owner: occupantName, residenceStatus: 'owner_occupied', tenant: '', rentalStartDate: '' }
-      : { ...house, residenceStatus: 'rented', tenant: occupantName, rentalStartDate: newOccupantForm.startDate }
-    try {
-      if (supabaseConfigured) {
-        await updateRemoteHouse(nextHouse, newOccupantForm.startDate)
-        await loadData()
-      } else {
-        const nextOccupancy = {
-          id: crypto.randomUUID(), houseId: house.id, occupantName,
-          occupantRole: newOccupantForm.occupantRole, startDate: newOccupantForm.startDate,
-          endDate: '', notes: 'Dibuat dari penambahan penghuni baru',
-        }
-        setData((current) => ({
-          ...current,
-          houses: current.houses.map((item) => item.id === house.id ? nextHouse : item),
-          houseOccupancies: [nextOccupancy, ...current.houseOccupancies.map((item) =>
-            item.houseId === house.id && !item.endDate
-              ? { ...item, endDate: previousDateValue(newOccupantForm.startDate) }
-              : item)],
-        }))
-      }
-      setNewOccupantForm((form) => ({ ...form, occupantName: '', startDate: today }))
-      flash(`${occupantName} ditambahkan sebagai ${occupantRoleLabel[newOccupantForm.occupantRole].toLowerCase()} aktif ${house.number}. Penghuni sebelumnya dipindahkan ke riwayat.`)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Penghuni baru gagal disimpan.') }
-  }
-
   const saveOpeningArrearsItem = async (event: FormEvent) => {
     event.preventDefault(); setError('')
     const amount = Number(arrearsForm.originalAmount)
@@ -1225,6 +1196,7 @@ function App() {
         <button className={publicView === 'other-funds' ? 'active' : ''} onClick={() => setPublicView('other-funds')}><PiggyBank size={18} />Penerimaan Lain-Lain</button>
         <button className={publicView === 'expenses' ? 'active' : ''} onClick={() => setPublicView('expenses')}><WalletCards size={18} />Laporan Posisi Keuangan</button>
         <button className={publicView === 'opening-arrears' ? 'active' : ''} onClick={() => setPublicView('opening-arrears')}><CircleAlert size={18} />Tunggakan s.d. 31 Des 2025</button>
+        <button className={publicView === 'household-members' ? 'active' : ''} onClick={() => setPublicView('household-members')}><Users size={18} />Household Member</button>
       </nav>
 
       {publicView === 'overview' && <div className="page-stack">
@@ -1313,6 +1285,7 @@ function App() {
           return <details className="arrears-movement-detail" key={item.id}><summary><span><strong>{item.debtorName}</strong><small>{item.houseId ? data.houses.find((house) => house.id === item.houseId)?.number ?? `CSJ ${item.houseId}` : 'Rumah lama belum diketahui'}</small></span><span className={`mini-status ${item.outstanding === 0 ? 'paid' : 'due'}`}>{item.outstanding === 0 ? 'Lunas' : item.settled > 0 ? 'Sebagian' : 'Belum bayar'}</span><strong>{rupiah.format(item.outstanding)}</strong></summary><div className="table-wrap"><table className="arrears-movement-table"><thead><tr><th>Tanggal</th><th>Keterangan</th><th>Pembayaran</th><th>Saldo</th></tr></thead><tbody><tr><td>31 Des 2025</td><td>Saldo awal tunggakan</td><td>—</td><td><strong>{rupiah.format(item.originalAmount)}</strong></td></tr>{movements.map((movement) => { running = Math.max(running - movement.amount, 0); return <tr key={movement.id}><td>{movement.date}</td><td>{movement.method || 'Pembayaran'}{movement.notes ? ` · ${movement.notes}` : ''}</td><td className="amount-in">{rupiah.format(movement.amount)}</td><td><strong>{rupiah.format(running)}</strong></td></tr> })}</tbody></table></div></details>
         })}</div></section>
       </div>}
+      {publicView === 'household-members' && <HouseholdMembersPage accounts={householdAccounts} />}
     </> : <section className="admin-layout">
       <aside className="admin-sidebar"><div><span className="section-kicker">Area pengurus</span><h2>Administrasi CSJ</h2><p>Kelola data kas dengan akses terbatas.</p></div><nav>
         <button className={adminView === 'houses' ? 'active' : ''} onClick={() => setAdminView('houses')}><Building2 size={18} />Data Rumah</button>
@@ -1322,6 +1295,7 @@ function App() {
         <button className={adminView === 'receivables' ? 'active' : ''} onClick={() => setAdminView('receivables')}><TrendingUp size={18} />Piutang</button>
         <button className={adminView === 'journal' ? 'active' : ''} onClick={() => setAdminView('journal')}><BookOpen size={18} />Jurnal Kas</button>
         <button className={adminView === 'opening-arrears' ? 'active' : ''} onClick={() => setAdminView('opening-arrears')}><CircleAlert size={18} />Tunggakan s.d. 2025</button>
+        <button className={adminView === 'household-members' ? 'active' : ''} onClick={() => setAdminView('household-members')}><Users size={18} />Household Member</button>
         <button className={adminView === 'settings' ? 'active' : ''} onClick={() => setAdminView('settings')}><Settings2 size={18} />Pengaturan</button>
       </nav><div className="sidebar-actions"><button onClick={() => setMode('public')}><ArrowLeft size={17} />Halaman warga</button><button onClick={() => void signOut()}><LogOut size={17} />Keluar admin</button></div></aside>
       <div className="admin-content">
@@ -1436,22 +1410,14 @@ function App() {
           </section>
         </>}
 
+        {adminView === 'household-members' && <HouseholdMembersAdmin accounts={householdAccounts} />}
+
         {adminView === 'houses' && <>
           <div className="admin-heading"><div><span>Data dasar</span><h2>Rumah dan Penghuni</h2><p>Penghuni aktif ditampilkan terpisah dari riwayat penghuni yang sudah tidak tinggal di CSJ.</p></div><input className="search-input" placeholder="Cari rumah atau nama…" value={houseQuery} onChange={(e) => setHouseQuery(e.target.value)} /></div>
-          <section className="panel new-occupant-panel">
-            <div className="panel-title"><div><span>Perubahan penghuni</span><h3>Tambahkan Penghuni Baru</h3><p>Pilih pemilik atau penyewa. Penghuni aktif sebelumnya otomatis dipindahkan ke tabel riwayat dengan tanggal selesai satu hari sebelum tanggal mulai baru.</p></div></div>
-            <form className="new-occupant-form" onSubmit={saveNewOccupant}>
-              <label>Nomor rumah<select value={newOccupantForm.houseId} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, houseId: event.target.value })}>{data.houses.map((house) => <option key={house.id} value={house.id}>{house.number}</option>)}</select></label>
-              <label>Nama penghuni baru<input required placeholder="Nama pemilik atau penyewa" value={newOccupantForm.occupantName} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, occupantName: event.target.value })} /></label>
-              <label>Status penghuni<select value={newOccupantForm.occupantRole} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, occupantRole: event.target.value as 'owner' | 'tenant' })}><option value="owner">Pemilik</option><option value="tenant">Penyewa</option></select></label>
-              <label>Tanggal mulai<input type="date" required value={newOccupantForm.startDate} onChange={(event) => setNewOccupantForm({ ...newOccupantForm, startDate: event.target.value })} /></label>
-              <button className="primary-action" type="submit"><Plus size={18} />Simpan penghuni baru</button>
-            </form>
-            {selectedNewOccupantHouse && <small className="occupant-change-note">Rumah terpilih: <strong>{selectedNewOccupantHouse.number}</strong>. Data pemilik rumah tetap dipertahankan ketika status baru adalah penyewa.</small>}
-          </section>
+          <HouseDirectory houses={data.houses} query={houseQuery} outstanding={occupantOutstanding} onSaved={() => loadData(true)} />
           <section className="panel active-occupants-panel">
-            <div className="panel-title"><div><span>{activeOccupants.length} penghuni aktif</span><h3>Penghuni Aktif</h3><p>Hanya pihak yang saat ini tinggal dan bertanggung jawab atas iuran rumah yang ditampilkan di sini.</p></div></div>
-            <div className="table-wrap"><table className="occupancy-ledger-table"><thead><tr><th>Nomor rumah</th><th>Nama</th><th>Status</th><th>Tanggal mulai</th><th>Tanggal selesai</th><th>Tunggakan</th></tr></thead><tbody>{activeOccupants.length ? activeOccupants.map((occupancy) => { const house = data.houses.find((item) => item.id === occupancy.houseId); const outstanding = occupantOutstanding(occupancy.houseId, occupancy.occupantName); return <tr key={occupancy.id}><td><strong>{house?.number ?? `CSJ ${occupancy.houseId}`}</strong>{occupancy.houseId === 2 || occupancy.houseId === 3 ? <small className="joint-note">Akun gabungan 02+03</small> : null}</td><td><strong>{occupancy.occupantName}</strong></td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td><span className="current-occupant-badge">Masih aktif</span></td><td>{outstanding > 0 ? <strong className="occupancy-outstanding">{rupiah.format(outstanding)}</strong> : <span className="mini-status paid">Lunas</span>}</td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Tidak ada penghuni aktif yang sesuai pencarian.</div></td></tr>}</tbody></table></div>
+            <div className="panel-title"><div><span>{activeOccupants.length} penghuni aktif</span><h3>Database Penghuni · Status Saat Ini</h3><p>Daftar penghuni aktif dan rumah kosong. Riwayat periode tinggal ditampilkan pada tabel di bawah.</p></div></div>
+            <div className="table-wrap"><table className="occupancy-ledger-table"><thead><tr><th>Nomor rumah</th><th>Nama</th><th>Status</th><th>Tanggal mulai</th><th>Tanggal selesai</th><th>Tunggakan</th></tr></thead><tbody>{activeOccupants.length ? activeOccupants.map((occupancy) => { const house = data.houses.find((item) => item.id === occupancy.houseId); const outstanding = occupantOutstanding(occupancy.houseId, occupancy.occupantName); return <tr key={occupancy.id}><td><strong>{house?.number ?? `CSJ ${occupancy.houseId}`}</strong>{occupancy.houseId === 2 || occupancy.houseId === 3 ? <small className="joint-note">Akun gabungan 02+03</small> : null}</td><td><strong>{occupancy.occupantName}</strong></td><td>{occupantRoleLabel[occupancy.occupantRole]}</td><td>{occupancy.startDate}</td><td><span className="current-occupant-badge">Masih aktif</span></td><td>{outstanding > 0 ? <strong className="occupancy-outstanding">{rupiah.format(outstanding)}</strong> : <span className="mini-status paid">Lunas</span>}</td></tr> }) : <tr><td colSpan={6}><div className="empty-state">Tidak ada penghuni aktif yang sesuai pencarian.</div></td></tr>}{data.houses.filter(house => house.residenceStatus === 'empty' && occupancyMatchesSearch(house.id, house.owner)).map(house => <tr key={`empty-${house.id}`}><td><strong>{house.number}</strong></td><td>—</td><td>Kosong</td><td>{house.vacancyStartDate || 'Belum diketahui'}</td><td>Masih kosong</td><td>{rupiah.format(occupantOutstanding(house.id, house.owner))}</td></tr>)}</tbody></table></div>
           </section>
           <section className="panel occupancy-history-panel">
             <div className="panel-title"><div><span>{formerOccupants.length} catatan</span><h3>Riwayat Penghuni yang Sudah Tidak Tinggal di CSJ</h3><p>Catatan ini tersimpan otomatis ketika penghuni baru ditambahkan. Tunggakan tetap melekat pada kombinasi nomor rumah dan nama penghuni lama.</p></div></div>

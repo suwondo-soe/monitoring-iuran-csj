@@ -1,5 +1,5 @@
-export type PublicView = 'overview' | 'dues' | 'other-funds' | 'expenses' | 'opening-arrears'
-export type AdminView = 'payments' | 'other-funds' | 'expenses' | 'receivables' | 'journal' | 'opening-arrears' | 'houses' | 'settings'
+export type PublicView = 'overview' | 'dues' | 'other-funds' | 'expenses' | 'opening-arrears' | 'household-members'
+export type AdminView = 'payments' | 'other-funds' | 'expenses' | 'receivables' | 'journal' | 'opening-arrears' | 'household-members' | 'houses' | 'settings'
 export type ResidenceStatus = 'owner_occupied' | 'rented' | 'empty'
 
 export type House = {
@@ -12,6 +12,7 @@ export type House = {
   openingArrears: number
   monthlyFeeOverride?: number | null
   billingStartMonth: string
+  vacancyStartDate?: string
 }
 
 export type OccupantRole = 'owner' | 'tenant'

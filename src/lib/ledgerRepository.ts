@@ -15,6 +15,7 @@ type HouseRow = {
   opening_arrears: number | string
   monthly_fee_override: number | string | null
   billing_start_month?: string | null
+  vacancy_start_date?: string | null
 }
 
 type PaymentRow = {
@@ -227,6 +228,7 @@ export async function loadRemoteLedger(): Promise<LedgerData> {
     openingArrears: Number(row.opening_arrears),
     monthlyFeeOverride: row.monthly_fee_override === null ? null : Number(row.monthly_fee_override),
     billingStartMonth: row.billing_start_month?.slice(0, 7) ?? (row.id === 6 ? '2026-05' : row.id === 12 ? '2026-08' : '2026-01'),
+    vacancyStartDate: row.vacancy_start_date ?? '',
   }))
 
   const tariffs = (tariffsResult.data as TariffRow[]).map((row): Tariff => ({
@@ -413,67 +415,14 @@ export async function createRemoteTariff(tariff: Tariff) {
 
 export async function updateRemoteHouse(house: House, changeDate = new Date().toISOString().slice(0, 10)) {
   const client = requireClient()
-  const { data: previous, error: previousError } = await client.from('houses')
-    .select('owner_name,residence_status,tenant_name')
-    .eq('id', house.id)
-    .single()
-  if (previousError) throw previousError
-
-  const previousName = previous.residence_status === 'rented'
-    ? (previous.tenant_name ?? '')
-    : previous.residence_status === 'owner_occupied' ? previous.owner_name : ''
-  const previousRole = previous.residence_status === 'rented' ? 'tenant' : 'owner'
-  const nextName = house.residenceStatus === 'rented'
-    ? house.tenant
-    : house.residenceStatus === 'owner_occupied' ? house.owner : ''
-  const nextRole = house.residenceStatus === 'rented' ? 'tenant' : 'owner'
-  const occupantChanged = previousName.trim() !== nextName.trim() || previousRole !== nextRole
-
-  let activeOccupancy: { id: string, start_date: string } | null = null
-  if (occupantChanged) {
-    const { data, error: activeError } = await client.from('house_occupancies')
-      .select('id,start_date')
-      .eq('house_id', house.id)
-      .is('end_date', null)
-      .maybeSingle()
-    if (activeError) throw activeError
-    activeOccupancy = data
-    if (activeOccupancy && changeDate <= activeOccupancy.start_date) {
-      throw new Error(`Tanggal mulai penanggung jawab baru harus setelah ${activeOccupancy.start_date}.`)
-    }
-  }
-
-  const { error } = await client.from('houses').update({
-    owner_name: house.owner,
-    residence_status: house.residenceStatus,
-    tenant_name: house.tenant || null,
-    rental_start_date: house.rentalStartDate || null,
-    opening_arrears: house.openingArrears,
-    monthly_fee_override: house.monthlyFeeOverride,
-    billing_start_month: `${house.billingStartMonth}-01`,
-  }).eq('id', house.id)
-  if (error) throw error
-  if (!occupantChanged) return
-
-  if (activeOccupancy) {
-    const priorDate = new Date(`${changeDate}T12:00:00Z`)
-    priorDate.setUTCDate(priorDate.getUTCDate() - 1)
-    const previousEndDate = priorDate.toISOString().slice(0, 10)
-    const { error: closeError } = await client.from('house_occupancies')
-      .update({ end_date: previousEndDate })
-      .eq('id', activeOccupancy.id)
-    if (closeError) throw closeError
-  }
-  if (nextName.trim()) {
-    const { error: insertError } = await client.from('house_occupancies').insert({
-      house_id: house.id,
-      occupant_name: nextName.trim(),
-      occupant_role: nextRole,
-      start_date: changeDate,
-      notes: 'Dibuat otomatis dari perubahan data rumah',
-    })
-    if (insertError) throw insertError
-  }
+  const { error } = await client.rpc('update_house_resident', {
+    target_house_id: house.id,
+    new_owner: house.owner,
+    new_status: house.residenceStatus,
+    new_tenant: house.tenant,
+    change_date: changeDate,
+  })
+  if (error) throw new Error(error.message)
   await syncPublicOccupancyHistory()
 }
 

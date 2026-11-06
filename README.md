@@ -21,6 +21,7 @@ pengurus yang masuk melalui Supabase Auth.
 - Login admin dengan Supabase Auth
 - Pengaturan rekening, saldo awal, dan tarif dari ruang admin
 - Penyimpanan PostgreSQL dengan Row Level Security
+- Pendataan Household Member per rumah, statistik agregat warga, dan unggah KK opsional
 - Mode lokal otomatis jika Supabase belum dikonfigurasi
 
 Tarif awal Januari 2026:
@@ -110,6 +111,51 @@ Referensi resmi:
 - [Supabase Auth dengan React](https://supabase.com/docs/guides/auth/quickstarts/react)
 - [Vite di Vercel](https://vercel.com/docs/frameworks/frontend/vite)
 - [Environment variables Vercel](https://vercel.com/docs/environment-variables)
+
+## Database Pemilik, Penyewa, dan Penghuni
+
+Jalankan migrasi `supabase/migrations/202611060007_house_directory.sql`
+setelah seluruh migrasi sebelumnya, sebelum merilis frontend baru. Migrasi ini
+menambahkan tabel terpisah `house_owners` dan `house_tenants`, bucket privat
+`family-cards`, tanggal mulai rumah kosong, dan fungsi transaksi perubahan
+penghuni. Tabel penghuni tetap memakai `house_occupancies` agar riwayat iuran
+tetap tersambung. Tanggal kepemilikan yang belum diketahui tidak diisi otomatis.
+
+Di **Admin > Data Rumah**, pilih Pemilik Rumah atau Penyewa Rumah untuk
+menambah/mengedit nama, rumah, periode, nomor telepon, dan KK. Penyewa juga
+menyimpan nama pemilik. KK mendukung PDF/JPG/PNG maksimal 5 MB dan hanya dapat
+dibaca admin melalui URL yang berlaku 60 detik. Data pribadi tidak disalin
+ke `app_settings` atau data publik. Mode lokal menyimpan data teks di browser;
+unggahan KK memerlukan Supabase.
+
+Jalankan juga `supabase/migrations/202611060008_unified_house_residents.sql`.
+**Ganti Pemilik** memilih salah satu rumah yang sudah ada, menutup periode pemilik
+lama, dan mencatat pemilik baru. Centang **Pemilik mulai tinggal** untuk sekaligus
+mengganti penghuni; jika tidak dicentang, penyewa aktif dipertahankan, sedangkan
+rumah yang sebelumnya dihuni pemilik menjadi kosong. **Tambah Penyewa** otomatis
+memperbarui penghuni dari tanggal mulai tinggal dan menutup periode sebelumnya.
+Tanggal mulai tinggal dapat berbeda dari tanggal mulai kepemilikan/sewa.
+Tidak perlu lagi mengisi form penghuni kedua. **Edit** memperbarui telepon dan KK;
+identitas dan periode historis dipertahankan. Pemilik saat ini dapat mulai tinggal
+melalui Edit. **Akhiri masa tinggal** menyimpan tanggal terakhir tinggal dan
+menandai rumah kosong sejak hari berikutnya. Semua perubahan terkait di Supabase
+berjalan dalam satu transaksi dan mempertahankan jumlah rumah.
+Nilai tunggakan mengikuti perhitungan iuran yang ada, berdasarkan rumah dan nama,
+bukan saldo manual kedua. Nilai akun gabungan CSJ 02+03 jangan dijumlahkan dua kali.
+
+## Household Member
+
+Jalankan `supabase/migrations/202611070009_household_members.sql` setelah migrasi
+sebelumnya. Migrasi ini menambahkan tabel privat `household_submissions` dan
+`household_members`, statistik publik yang hanya berisi angka agregat, serta bucket
+privat `household-family-cards`.
+
+Warga memilih nomor rumah dan penghuni aktif, lalu mencatat anggota keluarga atau
+orang lain yang tinggal bersama. Kode pembaruan 6 digit diperlukan untuk membuka
+dan mengubah rincian yang sudah disimpan. Dokumen KK bersifat **opsional**; jika
+diunggah, format yang didukung adalah PDF/JPG/PNG maksimal 5 MB. Nama, tanggal
+lahir, dan dokumen tidak tersedia melalui tabel publik. Admin dapat melihat rincian
+dan membuka dokumen KK (jika ada) melalui tautan privat yang berlaku singkat.
 
 ## Perintah Proyek
 
