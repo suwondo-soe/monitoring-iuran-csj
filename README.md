@@ -156,6 +156,9 @@ dan mengubah rincian yang sudah disimpan. Dokumen KK bersifat **opsional**; jika
 diunggah, format yang didukung adalah PDF/JPG/PNG maksimal 5 MB. Nama, tanggal
 lahir, dan dokumen tidak tersedia melalui tabel publik. Admin dapat melihat rincian
 dan membuka dokumen KK (jika ada) melalui tautan privat yang berlaku singkat.
+Jalankan juga `supabase/migrations/202611070010_household_statistics_privacy.sql`.
+Statistik anggota dan penghuni baru dibuka setelah minimal 10 rumah mengisi form;
+sebelum ambang tersebut, API hanya mengembalikan jumlah rumah yang sudah mengisi.
 
 ## Perintah Proyek
 

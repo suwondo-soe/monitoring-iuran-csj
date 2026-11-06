@@ -20,6 +20,8 @@ const relationships: HouseholdRelationship[] = [
   'Kepala Keluarga', 'Istri', 'Anak', 'Cucu', 'Orang Tua', 'Mertua', 'Lainnya',
 ]
 
+const householdStatisticsThreshold = 10
+
 const statisticCategories = [
   ['gender', 'Jenis Kelamin'],
   ['age', 'Usia'],
@@ -52,8 +54,16 @@ function YesNo({ value, onChange }: { value: boolean | null, onChange: (value: b
   </div>
 }
 
-function HouseholdStatistics({ rows }: { rows: HouseholdStatistic[] }) {
+function HouseholdStatistics({ rows, completedHouseholds }: { rows: HouseholdStatistic[], completedHouseholds: number }) {
   const [category, setCategory] = useState<(typeof statisticCategories)[number][0]>('gender')
+  if (completedHouseholds < householdStatisticsThreshold) {
+    const progress = Math.min(completedHouseholds / householdStatisticsThreshold * 100, 100)
+    return <section className="panel household-statistics household-statistics-locked">
+      <div className="household-stat-lock-icon"><ShieldCheck size={28} /></div>
+      <div><span>Privasi statistik warga</span><h2>Statistik Belum Dibuka</h2><p>Rangkuman jumlah anggota keluarga, penghuni rumah, jenis kelamin, usia, dan kategori lainnya baru ditampilkan setelah minimal {householdStatisticsThreshold} rumah mengisi form.</p></div>
+      <div className="household-privacy-progress"><div><span>Progres pengisian minimum</span><strong>{completedHouseholds} dari {householdStatisticsThreshold} rumah</strong></div><div className="household-privacy-track"><i style={{ width: `${progress}%` }} /></div><small>Data individu dan angka agregat tetap disembunyikan agar tidak dapat ditelusuri kembali.</small></div>
+    </section>
+  }
   const summary = new Map(rows.filter((row) => row.category === 'summary').map((row) => [row.label, row.total]))
   const chartRows = rows.filter((row) => row.category === category)
   const maximum = Math.max(...chartRows.map((row) => row.total), 1)
@@ -87,8 +97,9 @@ export default function HouseholdMembersPage({ accounts }: { accounts: Household
   const statusMap = useMemo(() => new Map(statuses.map((status) => [status.houseId, status])), [statuses])
 
   const refresh = async () => {
-    const [nextStatuses, nextStatistics] = await Promise.all([loadHouseholdStatuses(), loadHouseholdStatistics()])
-    setStatuses(nextStatuses); setStatistics(nextStatistics)
+    const nextStatuses = await loadHouseholdStatuses()
+    setStatuses(nextStatuses)
+    setStatistics(nextStatuses.length >= householdStatisticsThreshold ? await loadHouseholdStatistics() : [])
   }
 
   // Initial loading synchronizes this standalone module with Supabase/local storage.
@@ -178,6 +189,6 @@ export default function HouseholdMembersPage({ accounts }: { accounts: Household
       {error && <p className="household-message error">{error}</p>}{notice && <p className="household-message success">{notice}</p>}
     </section>}
 
-    <HouseholdStatistics rows={statistics} />
+    <HouseholdStatistics rows={statistics} completedHouseholds={statuses.length} />
   </div>
 }
